@@ -3,6 +3,7 @@
 /_build-vs*-x*/
 /_deps-vs*-x*-installed/
 /_deps-vs2022-Win32-installed/
+/_build-vs2022-Win32/
 /_installed-vs*-x*/
 /build/
 
