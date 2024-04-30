@@ -76,7 +76,7 @@ class Blender:
     def get_name(cls, ifc_class, name): pass
     def get_selected_objects(cls): pass
     def create_ifc_object(cls, ifc_class: str, name: str = None, data=None): pass
-    def get_obj_ifc_definition_id(cls, obj=None, obj_type=None): pass
+    def get_obj_ifc_definition_id(cls, obj=None, obj_type=None, context=None): pass
     def is_ifc_object(cls, obj): pass
     def is_ifc_class_active(cls, ifc_class): pass
     def get_viewport_context(cls): pass
@@ -151,6 +151,17 @@ class Bsdd:
     def search_class(cls, client, keyword, dictionary_uris, related_ifc_entities): pass
     def set_active_bsdd(cls, name, uri): pass
     def should_load_preview_domains(cls): pass
+
+
+@interface
+class Clash:
+    def export_clash_sets(cls): pass
+    def get_clash(cls, clash_set, a_global_id, b_global_id): pass
+    def get_clash_set(cls, name): pass
+    def get_clash_sets(cls): pass
+    def import_active_clashes(cls): pass
+    def load_clash_sets(cls, fn): pass
+    def look_at(cls, target, location): pass
 
 
 @interface
@@ -318,6 +329,7 @@ class Drawing:
     def get_name(cls, element): pass
     def get_path_filename(cls, uri): pass
     def get_reference_description(cls, reference): pass
+    def generate_reference_attributes(cls, reference, **attributes): pass
     def get_reference_document(cls, reference): pass
     def get_reference_location(cls, reference): pass
     def get_references_with_location(cls, location): pass
@@ -508,7 +520,7 @@ class Misc:
 class Model:
     def convert_si_to_unit(cls, value): pass
     def convert_unit_to_si(cls, value): pass
-    def export_curve(cls, position, edge_indices, points=None): pass
+    def export_curve(cls, position, edge_indices): pass
     def export_points(cls, position, indices): pass
     def export_profile(cls, obj, position=None): pass
     def generate_occurrence_name(cls, element_type, ifc_class): pass
@@ -860,7 +872,8 @@ class Spatial:
     def get_transformed_mesh_from_local_to_global(cls, mesh): pass
     def edit_active_space_obj_from_mesh(cls, mesh): pass
     def set_obj_origin_to_bboxcenter(cls, obj): pass
-    def set_obj_origin_to_cursor_position(cls, obj): pass
+    def set_obj_origin_to_bboxcenter_and_zero_elevation(cls, obj): pass
+    def set_obj_origin_to_cursor_position_and_zero_elevation(cls, obj): pass
     def get_selected_objects(cls): pass
     def get_active_obj(cls): pass
     def get_active_obj_z(cls): pass

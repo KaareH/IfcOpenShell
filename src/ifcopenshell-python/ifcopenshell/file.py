@@ -20,6 +20,7 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
+from __future__ import annotations
 
 import os
 import re
@@ -27,6 +28,7 @@ import numbers
 import zipfile
 import functools
 from pathlib import Path
+from typing import Optional, Any
 
 import ifcopenshell.util.element
 import ifcopenshell.util.file
@@ -50,7 +52,7 @@ class Transaction:
         self.batch_delete_ids = set()
         self.batch_inverses = []
 
-    def serialise_entity_instance(self, element):
+    def serialise_entity_instance(self, element: ifcopenshell.entity_instance) -> dict[str, Any]:
         info = element.get_info()
         for key, value in info.items():
             info[key] = self.serialise_value(element, value)
@@ -101,7 +103,7 @@ class Transaction:
                 }
             )
 
-    def store_delete(self, element):
+    def store_delete(self, element: ifcopenshell.entity_instance) -> None:
         inverses = {}
         if self.is_batched:
             if element.id() not in self.batch_delete_ids:
@@ -189,13 +191,20 @@ class file(object):
 
     .. code:: python
 
-        ifc_file = ifcopenshell.open(file_path)
-        products = ifc_file.by_type("IfcProduct")
+        model = ifcopenshell.open(file_path)
+        products = model.by_type("IfcProduct")
         print(products[0].id(), products[0].GlobalId) # 122 2XQ$n5SLP5MBLyL442paFx
-        print(products[0] == ifc_file[122] == ifc_file["2XQ$n5SLP5MBLyL442paFx"]) # True
+        print(products[0] == model[122] == model["2XQ$n5SLP5MBLyL442paFx"]) # True
     """
 
-    def __init__(self, f=None, schema=None, schema_version=None):
+    wrapped_data: ifcopenshell_wrapper.file
+
+    def __init__(
+        self,
+        f: Optional[ifcopenshell_wrapper.file] = None,
+        schema: Optional[str] = None,
+        schema_version: Optional[tuple[int, int, int, int]] = None,
+    ):
         """Create a new blank IFC model
 
         This IFC model does not have any entities in it yet. See the
@@ -219,7 +228,7 @@ class file(object):
             ADD2 TC1, which is the official version approved by ISO when people
             refer to "IFC4". Generally you should not use this argument unless
             you are testing non-ISO IFC releases.
-        :type schema_version: tuple[int]
+        :type schema_version: tuple[int, int, int, int]
 
         Example:
 
@@ -240,7 +249,7 @@ class file(object):
             prefixes = ("IFC", "X", "_ADD", "_TC")
             schema = "".join("".join(map(str, t)) if t[1] else "" for t in zip(prefixes, schema_version))
         else:
-            schema = {"IFC4X3": "IFC4X3_ADD1"}.get(schema, schema)
+            schema = {"IFC4X3": "IFC4X3_ADD2"}.get(schema, schema)
         if f is not None:
             self.wrapped_data = f
         else:
@@ -250,11 +259,12 @@ class file(object):
         self.history_size = 64
         self.history = []
         self.future = []
-        self.transaction = None
+        self.transaction: Optional[Transaction] = None
 
         import weakref
+
         file_dict[self.file_pointer()] = weakref.ref(self)
-        
+
     def __del__(self):
         del file_dict[self.file_pointer()]
 
@@ -294,7 +304,7 @@ class file(object):
         transaction.commit()
         self.history.append(transaction)
 
-    def create_entity(self, type, *args, **kwargs):
+    def create_entity(self, type: str, *args, **kwargs) -> ifcopenshell.entity_instance:
         """Create a new IFC entity in the file.
 
         :param type: Case insensitive name of the IFC class
@@ -392,30 +402,43 @@ class file(object):
         elif isinstance(key, basestring):
             return entity_instance(self.wrapped_data.by_guid(str(key)), self)
 
-    def by_id(self, id):
+    def by_id(self, id: int) -> ifcopenshell.entity_instance:
         """Return an IFC entity instance filtered by IFC ID.
 
         :param id: STEP numerical identifier
         :type id: int
+
+        :raises RuntimeError: If `id` is not found.
+
         :returns: An ifcopenshell.entity_instance.entity_instance
         :rtype: ifcopenshell.entity_instance.entity_instance
         """
         return self[id]
 
-    def by_guid(self, guid):
+    def by_guid(self, guid: str) -> ifcopenshell.entity_instance:
         """Return an IFC entity instance filtered by IFC GUID.
 
         :param guid: GlobalId value in 22-character encoded form
         :type guid: string
+
+        :raises RuntimeError: If `guid` is not found.
+
         :returns: An ifcopenshell.entity_instance.entity_instance
         :rtype: ifcopenshell.entity_instance.entity_instance
+
         """
         return self[guid]
 
-    def add(self, inst, _id=None):
+    def add(self, inst: ifcopenshell.entity_instance, _id: int = None) -> ifcopenshell.entity_instance:
         """Adds an entity including any dependent entities to an IFC file.
+        If the entity already exists, it is not re-added. Existence of entity is checked by it's `.identity()`.
 
-        If the entity already exists, it is not re-added."""
+        :param inst: The entity instance to add
+        :type inst: ifcopenshell.entity_instance.entity_instance
+        :returns: An ifcopenshell.entity_instance.entity_instance
+        :rtype: ifcopenshell.entity_instance.entity_instance
+        """
+
         if self.transaction:
             max_id = self.wrapped_data.getMaxId()
         inst.wrapped_data.this.disown()
@@ -425,7 +448,7 @@ class file(object):
             [self.transaction.store_create(e) for e in reversed(added_elements)]
         return result
 
-    def by_type(self, type, include_subtypes=True):
+    def by_type(self, type: str, include_subtypes=True) -> list[ifcopenshell.entity_instance]:
         """Return IFC objects filtered by IFC Type and wrapped with the entity_instance class.
 
         If an IFC type class has subclasses, all entities of those subclasses are also returned.
@@ -434,14 +457,19 @@ class file(object):
         :type type: string
         :param include_subtypes: Whether or not to return subtypes of the IFC class
         :type include_subtypes: bool
+
+        :raises RuntimeError: If `type` is not found in IFC schema.
+
         :returns: A list of ifcopenshell.entity_instance.entity_instance objects
-        :rtype: list
+        :rtype: list[ifcopenshell.entity_instance.entity_instance]
         """
         if include_subtypes:
             return [entity_instance(e, self) for e in self.wrapped_data.by_type(type)]
         return [entity_instance(e, self) for e in self.wrapped_data.by_type_excl_subtypes(type)]
 
-    def traverse(self, inst, max_levels=None, breadth_first=False):
+    def traverse(
+        self, inst: ifcopenshell.entity_instance, max_levels=None, breadth_first=False
+    ) -> list[ifcopenshell.entity_instance]:
         """Get a list of all referenced instances for a particular instance including itself
 
         :param inst: The entity instance to get all sub instances
@@ -451,7 +479,7 @@ class file(object):
         :param breadth_first: Whether to use breadth-first search, the default is depth-first.
         :type max_levels: bool
         :returns: A list of ifcopenshell.entity_instance.entity_instance objects
-        :rtype: list
+        :rtype: list[ifcopenshell.entity_instance.entity_instance]
         """
         if max_levels is None:
             max_levels = -1
@@ -463,7 +491,9 @@ class file(object):
 
         return [entity_instance(e, self) for e in fn(inst.wrapped_data, max_levels)]
 
-    def get_inverse(self, inst, allow_duplicate=False, with_attribute_indices=False):
+    def get_inverse(
+        self, inst: ifcopenshell.entity_instance, allow_duplicate=False, with_attribute_indices=False
+    ) -> list[ifcopenshell.entity_instance]:
         """Return a list of entities that reference this entity
 
         :param inst: The entity instance to get inverse relationships
@@ -472,7 +502,7 @@ class file(object):
         :param with_attribute_indices: Returns pairs of <i, idx>
            where i[idx] is inst or contains inst. Requires allow_duplicate=True
         :returns: A list of ifcopenshell.entity_instance.entity_instance objects
-        :rtype: list
+        :rtype: list[ifcopenshell.entity_instance.entity_instance]
         """
         if with_attribute_indices and not allow_duplicate:
             raise ValueError("with_attribute_indices requires allow_duplicate to be True")
@@ -488,7 +518,7 @@ class file(object):
 
         return set(inverses)
 
-    def get_total_inverses(self, inst):
+    def get_total_inverses(self, inst: ifcopenshell.entity_instance) -> int:
         """Returns the number of entities that reference this entity
 
         :param inst: The entity instance to get inverse relationships
@@ -498,7 +528,7 @@ class file(object):
         """
         return self.wrapped_data.get_total_inverses(inst.wrapped_data)
 
-    def remove(self, inst):
+    def remove(self, inst: ifcopenshell.entity_instance) -> None:
         """Deletes an IFC object in the file.
 
         Attribute values in other entity instances that reference the deleted
@@ -573,7 +603,7 @@ class file(object):
         return
 
     @staticmethod
-    def from_string(s):
+    def from_string(s: str) -> file:
         return file(ifcopenshell_wrapper.read(s))
 
     @staticmethod

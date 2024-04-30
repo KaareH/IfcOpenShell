@@ -44,6 +44,10 @@ class BIM_PT_debug(Panel):
         row.operator("bim.parse_express", icon="IMPORT", text="")
         row.operator("bim.select_express_file", icon="FILE_FOLDER", text="")
 
+        row = self.layout.row(align=True)
+        row.prop(props, "package_name", text="")
+        row.operator("bim.pip_install", icon="EVENT_PAGEDOWN").name = props.package_name
+
         row = layout.row()
         row.operator("bim.reload_ifc_file", text="Incrementally Reload Changes")
 
@@ -70,6 +74,9 @@ class BIM_PT_debug(Panel):
 
         row = layout.row()
         row.operator("bim.profile_import_ifc")
+
+        row = layout.row()
+        row.operator("bim.debug_active_drawing")
 
         row = layout.split(factor=0.5, align=True)
         row.operator("bim.create_shape_from_step_id").should_include_curves = False

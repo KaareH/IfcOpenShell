@@ -34,6 +34,7 @@ from blenderbim.bim.ifc import IfcStore
 class LoadMaterials(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.load_materials"
     bl_label = "Load Materials"
+    bl_description = "Display list of named materials"
     bl_options = {"REGISTER", "UNDO"}
 
     def _execute(self, context):
@@ -117,7 +118,7 @@ class AddMaterial(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.add_material"
     bl_label = "Add Material"
     bl_options = {"REGISTER", "UNDO"}
-    obj: bpy.props.StringProperty()
+    obj: bpy.props.StringProperty(name="Material Name")
     name: bpy.props.StringProperty(default="Default")
 
     def invoke(self, context, event):
@@ -131,6 +132,19 @@ class AddMaterial(bpy.types.Operator, tool.Ifc.Operator):
         obj = bpy.data.materials.get(self.obj) if self.obj else None
         core.add_material(tool.Ifc, tool.Material, tool.Style, obj=obj, name=self.name)
         material_prop_purge()
+
+
+class DuplicateMaterial(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.duplicate_material"
+    bl_label = "Diplicate Material"
+    bl_options = {"REGISTER", "UNDO"}
+    material: bpy.props.IntProperty(name="Material ID")
+
+    def _execute(self, context):
+        ifc_file = tool.Ifc.get()
+        tool.Material.duplicate_material(ifc_file.by_id(self.material))
+        material_prop_purge()
+        bpy.ops.bim.load_materials()
 
 
 class AddMaterialSet(bpy.types.Operator, tool.Ifc.Operator):
@@ -273,6 +287,7 @@ class RemoveProfile(bpy.types.Operator, tool.Ifc.Operator):
 class AddLayer(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.add_layer"
     bl_label = "Add Layer"
+    bl_description = "The List is Ordered From Origin Point"
     bl_options = {"REGISTER", "UNDO"}
     obj: bpy.props.StringProperty()
     layer_set: bpy.props.IntProperty()
@@ -297,6 +312,7 @@ class AddLayer(bpy.types.Operator, tool.Ifc.Operator):
 class ReorderMaterialSetItem(bpy.types.Operator, tool.Ifc.Operator):
     bl_idname = "bim.reorder_material_set_item"
     bl_label = "Reorder Material Set Item"
+    bl_description = "The List is Ordered From Origin Point"
     bl_options = {"REGISTER", "UNDO"}
     obj: bpy.props.StringProperty()
     old_index: bpy.props.IntProperty()
@@ -760,6 +776,11 @@ class EditMaterialStyle(bpy.types.Operator, tool.Ifc.Operator):
         ifcopenshell.api.run("style.assign_material_style", ifc_file, material=material, style=style, context=context)
         tool.Material.disable_editing_material()
         core.load_materials(tool.Material, props.material_type)
+        # NOTE: Update all elements that has this material and
+        # not just the ones that are using it in IfcMaterialConstituent,
+        # to handle cases where Style is connected to geometry implicitly:
+        # e.g. RepItem->IfcElement->IfcMaterial->Style
+        # instead of RepItem->ShapeAspect->Constituent->Style.
         tool.Material.update_elements_using_material(material)
 
 

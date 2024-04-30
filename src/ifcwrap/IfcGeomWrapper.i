@@ -58,6 +58,14 @@
 	}
 }
 
+%inline %{
+template <typename T>
+std::pair<char const*, size_t> vector_to_buffer(const T& t) {
+    using V = typename std::remove_reference<decltype(t)>::type;
+    return { reinterpret_cast<const char*>(t.data()), t.size() * sizeof(typename V::value_type) };
+}
+%}
+
 %include "../ifcgeom_schema_agnostic/ifc_geom_api.h"
 %include "../ifcgeom_schema_agnostic/IfcGeomIteratorSettings.h"
 %include "../ifcgeom_schema_agnostic/IfcGeomElement.h"
@@ -73,6 +81,8 @@
 %include "../serializers/GltfSerializer.h"
 
 %template(ray_intersection_results) std::vector<IfcGeom::ray_intersection_result>;
+
+%template(clashes) std::vector<IfcGeom::clash>;
 
 // A Template instantantation should be defined before it is used as a base class. 
 // But frankly I don't care as most methods are subtlely different anyway.
@@ -104,6 +114,80 @@
 	aggregate_of_instance::ptr select_box(const Bnd_Box& b, bool completely_within = false) const {
 		std::vector<IfcUtil::IfcBaseEntity*> ps = $self->select_box(b, completely_within);
 		return IfcGeom_tree_vector_to_list(ps);
+	}
+
+
+    %typemap(in) const std::vector<IfcUtil::IfcBaseClass*>& (std::vector<IfcUtil::IfcBaseClass*> temp) {
+        if (!PyList_Check($input)) {
+            PyErr_SetString(PyExc_TypeError, "Expected a list.");
+            return NULL;
+        }
+        $1 = &temp;  // Set $1 to the address of temp, which SWIG will use as the argument in the wrapped function
+        temp.reserve(PyList_Size($input));  // Pre-allocate memory for efficiency
+        for (Py_ssize_t i = 0; i < PyList_Size($input); ++i) {
+            PyObject* pyObj = PyList_GetItem($input, i);
+            void* ptr = 0;
+            int res = SWIG_ConvertPtr(pyObj, &ptr, SWIGTYPE_p_IfcUtil__IfcBaseClass, 0);
+            if (!SWIG_IsOK(res)) {
+                PyErr_SetString(PyExc_TypeError, "List item is not of type IfcBaseClass.");
+                return NULL;
+            }
+            temp.push_back(reinterpret_cast<IfcUtil::IfcBaseClass*>(ptr));
+        }
+    }
+
+	std::vector<clash> clash_intersection_many(const std::vector<IfcUtil::IfcBaseClass*>& set_a, const std::vector<IfcUtil::IfcBaseClass*>& set_b, double tolerance, bool check_all) const {
+        std::vector<IfcUtil::IfcBaseEntity*> set_a_entities;
+        std::vector<IfcUtil::IfcBaseEntity*> set_b_entities;
+        for (auto* e : set_a) {
+            if (!e->declaration().is("IfcProduct")) {
+                throw IfcParse::IfcException("All instances should be of type IfcProduct");
+            }
+            set_a_entities.push_back(static_cast<IfcUtil::IfcBaseEntity*>(e));
+        }
+        for (auto* e : set_b) {
+            if (!e->declaration().is("IfcProduct")) {
+                throw IfcParse::IfcException("All instances should be of type IfcProduct");
+            }
+            set_b_entities.push_back(static_cast<IfcUtil::IfcBaseEntity*>(e));
+        }
+		return $self->clash_intersection_many(set_a_entities, set_b_entities, tolerance, check_all);
+	}
+
+	std::vector<clash> clash_collision_many(const std::vector<IfcUtil::IfcBaseClass*>& set_a, const std::vector<IfcUtil::IfcBaseClass*>& set_b, bool allow_touching) const {
+        std::vector<IfcUtil::IfcBaseEntity*> set_a_entities;
+        std::vector<IfcUtil::IfcBaseEntity*> set_b_entities;
+        for (auto* e : set_a) {
+            if (!e->declaration().is("IfcProduct")) {
+                throw IfcParse::IfcException("All instances should be of type IfcProduct");
+            }
+            set_a_entities.push_back(static_cast<IfcUtil::IfcBaseEntity*>(e));
+        }
+        for (auto* e : set_b) {
+            if (!e->declaration().is("IfcProduct")) {
+                throw IfcParse::IfcException("All instances should be of type IfcProduct");
+            }
+            set_b_entities.push_back(static_cast<IfcUtil::IfcBaseEntity*>(e));
+        }
+		return $self->clash_collision_many(set_a_entities, set_b_entities, allow_touching);
+	}
+
+	std::vector<clash> clash_clearance_many(const std::vector<IfcUtil::IfcBaseClass*>& set_a, const std::vector<IfcUtil::IfcBaseClass*>& set_b, double clearance, bool check_all) const {
+        std::vector<IfcUtil::IfcBaseEntity*> set_a_entities;
+        std::vector<IfcUtil::IfcBaseEntity*> set_b_entities;
+        for (auto* e : set_a) {
+            if (!e->declaration().is("IfcProduct")) {
+                throw IfcParse::IfcException("All instances should be of type IfcProduct");
+            }
+            set_a_entities.push_back(static_cast<IfcUtil::IfcBaseEntity*>(e));
+        }
+        for (auto* e : set_b) {
+            if (!e->declaration().is("IfcProduct")) {
+                throw IfcParse::IfcException("All instances should be of type IfcProduct");
+            }
+            set_b_entities.push_back(static_cast<IfcUtil::IfcBaseEntity*>(e));
+        }
+		return $self->clash_clearance_many(set_a_entities, set_b_entities, clearance, check_all);
 	}
 
 	aggregate_of_instance::ptr select(IfcUtil::IfcBaseClass* e, bool completely_within = false, double extend = 0.0) const {
@@ -234,6 +318,54 @@ struct ShapeRTTI : public boost::static_visitor<PyObject*>
 %}
 
 %extend IfcGeom::Representation::Triangulation {
+	
+	std::pair<const char*, size_t> faces_buffer() const {
+		return vector_to_buffer(self->faces());
+	}
+
+	std::pair<const char*, size_t> edges_buffer() const {
+		return vector_to_buffer(self->edges());
+	}
+
+	std::pair<const char*, size_t> material_ids_buffer() const {
+		return vector_to_buffer(self->material_ids());
+	}
+
+	std::pair<const char*, size_t> item_ids_buffer() const {
+		return vector_to_buffer(self->item_ids());
+	}
+
+	std::pair<const char*, size_t> verts_buffer() const {
+		return vector_to_buffer(self->verts());
+	}
+
+	std::pair<const char*, size_t> normals_buffer() const {
+		return vector_to_buffer(self->normals());
+	}
+
+    PyObject* colors_buffer() const {
+        std::vector<double> clrs;
+        clrs.reserve(self->materials().size() * 4);
+        for (auto& m : self->materials()) {
+            if (m.hasDiffuse()) {
+                clrs.push_back(m.diffuse()[0]);
+                clrs.push_back(m.diffuse()[1]);
+                clrs.push_back(m.diffuse()[2]);
+            } else {
+                clrs.push_back(0.);
+                clrs.push_back(0.);
+                clrs.push_back(0.);
+            }
+            if (m.hasTransparency()) {
+                clrs.push_back(1. - m.transparency());
+            } else {
+                clrs.push_back(1.);
+            }
+        }
+        auto p = vector_to_buffer(clrs);
+        return PyBytes_FromStringAndSize(p.first, p.second);
+    }
+
 	%pythoncode %{
         # Hide the getters with read-only property implementations
         id = property(id)
@@ -242,16 +374,17 @@ struct ShapeRTTI : public boost::static_visitor<PyObject*>
         material_ids = property(material_ids)
         materials = property(materials)
         item_ids = property(item_ids)
-	%}
-};
-
-// Specialized accessors follow later, for otherwise property definitions
-// would appear before templated getter functions are defined.
-%extend IfcGeom::Representation::Triangulation {
-	%pythoncode %{
         # Hide the getters with read-only property implementations
         verts = property(verts)
         normals = property(normals)
+
+        faces_buffer = property(faces_buffer)
+        edges_buffer = property(edges_buffer)
+        material_ids_buffer = property(material_ids_buffer)
+        item_ids_buffer = property(item_ids_buffer)
+        verts_buffer = property(verts_buffer)
+        normals_buffer = property(normals_buffer)
+        colors_buffer = property(colors_buffer)
 	%}
 };
 
@@ -266,6 +399,9 @@ struct ShapeRTTI : public boost::static_visitor<PyObject*>
 };
 
 %extend IfcGeom::Element {
+	std::pair<const char*, size_t> transformation_buffer() const {
+		return vector_to_buffer(self->transformation().matrix().data());
+	}
 
 	IfcUtil::IfcBaseClass* product_() const {
 		return $self->product();
@@ -282,6 +418,7 @@ struct ShapeRTTI : public boost::static_visitor<PyObject*>
         unique_id = property(unique_id)
         transformation = property(transformation)
         product = property(product_)
+        transformation_buffer = property(transformation_buffer)
 	%}
 
 };

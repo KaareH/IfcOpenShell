@@ -19,10 +19,12 @@
 import bpy
 import numpy as np
 import ifcopenshell
+import ifcopenshell.util.element
 import blenderbim.core.tool
 import blenderbim.tool as tool
 import blenderbim.bim.helper
 from mathutils import Color
+from typing import Union
 
 # fmt: off
 TEXTURE_MAPS_BY_METHODS = {
@@ -57,6 +59,12 @@ class Style(blenderbim.core.tool.Style):
     @classmethod
     def disable_editing_styles(cls):
         bpy.context.scene.BIMStylesProperties.is_editing = False
+
+    @classmethod
+    def duplicate_style(cls, style: ifcopenshell.entity_instance) -> ifcopenshell.entity_instance:
+        new_style = ifcopenshell.util.element.copy_deep(tool.Ifc.get(), style)
+        new_style.Name = style.Name + "_copy"
+        return new_style
 
     @classmethod
     def enable_editing(cls, obj):
@@ -95,7 +103,7 @@ class Style(blenderbim.core.tool.Style):
         return obj.name
 
     @classmethod
-    def get_style(cls, obj):
+    def get_style(cls, obj: bpy.types.Material) -> Union[ifcopenshell.entity_instance, None]:
         if obj.BIMMaterialProperties.ifc_style_id:
             try:
                 return tool.Ifc.get().by_id(obj.BIMMaterialProperties.ifc_style_id)
@@ -103,7 +111,9 @@ class Style(blenderbim.core.tool.Style):
                 return
 
     @classmethod
-    def get_style_elements(cls, blender_material_or_style):
+    def get_style_elements(
+        cls, blender_material_or_style: Union[bpy.types.Material, ifcopenshell.entity_instance]
+    ) -> dict[str, ifcopenshell.entity_instance]:
         if isinstance(blender_material_or_style, bpy.types.Material):
             if not blender_material_or_style.BIMMaterialProperties.ifc_style_id:
                 return {}
@@ -454,7 +464,7 @@ class Style(blenderbim.core.tool.Style):
         return results
 
     @classmethod
-    def get_style_ui_props_attributes(self, style_type):
+    def get_style_ui_props_attributes(cls, style_type):
         props = bpy.context.scene.BIMStylesProperties
         if style_type == "IfcExternallyDefinedSurfaceStyle":
             return props.external_style_attributes
@@ -499,7 +509,7 @@ class Style(blenderbim.core.tool.Style):
         blenderbim.bim.helper.import_attributes2(style, attributes)
 
     @classmethod
-    def has_blender_external_style(cls, style_elements):
+    def has_blender_external_style(cls, style_elements: dict[str, ifcopenshell.entity_instance]) -> bool:
         external_style = style_elements.get("IfcExternallyDefinedSurfaceStyle", None)
         return bool(external_style and external_style.Location and external_style.Location.endswith(".blend"))
 

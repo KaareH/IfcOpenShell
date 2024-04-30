@@ -17,17 +17,25 @@
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
 import numpy as np
+import numpy.typing as npt
 import collections
+import collections.abc
 import ifcopenshell
 import ifcopenshell.api
+import ifcopenshell.util.element
+import ifcopenshell.util.representation
+import ifcopenshell.util.unit
 from math import cos, sin, pi, tan, radians, degrees, atan, sqrt, ceil
-from typing import List
+from typing import List, Tuple, Type, Union
 from itertools import chain
 from mathutils import Vector, Matrix
 
 V = lambda *x: Vector([float(i) for i in x])
 sign = lambda x: x and (1, -1)[x < 0]
 PRECISION = 1.0e-5
+
+VectorTuple = Type[Tuple[float, float, float]]
+"tuple of 3 `float` values"
 
 
 def is_x(value, x, si_conversion=None):
@@ -217,15 +225,24 @@ class ShapeBuilder:
 
     def plane(
         self, location: Vector = Vector((0.0, 0.0, 0.0)).freeze(), normal: Vector = Vector((0.0, 0.0, 1.0)).freeze()
-    ):
-        location = self.file.createIfcCartesianPoint(location)
-        direction = self.file.createIfcDirection(normal)
+    ) -> ifcopenshell.entity_instance:
+        """
+        Create IfcPlane.
+
+        :param location: plane position, defaults to `(0.0, 0.0, 0.0)`
+        :type location: Vector, optional
+        :param normal: plane normal direction, defaults to `(0.0, 0.0, 1.0)`
+        :type normal: Vector, optional
+        :return: IfcPlane
+        :rtype: ifcopenshell.entity_instance
+        """
+
         if normal.to_tuple(2) == Vector((0.0, 0.0, 1.0)):
             arbitrary_vector = Vector((0.0, 1.0, 0.0))
         else:
             arbitrary_vector = Vector((0.0, 0.0, 1.0))
-        x_axis = self.file.createIfcDirection(normal.cross(arbitrary_vector).normalized())
-        axis_placement = self.file.createIfcAxis2Placement3D(location, direction, x_axis)
+        x_axis = normal.cross(arbitrary_vector).normalized()
+        axis_placement = self.create_axis2_placement_3d(location, normal, x_axis)
         return self.file.createIfcPlane(axis_placement)
 
     # TODO: explain points order for the curve_between_two_points
@@ -327,6 +344,16 @@ class ShapeBuilder:
                 "Ref: https://ifc43-docs.standards.buildingsmart.org/IFC/RELEASE/IFC4x3/HTML/lexical/IfcArbitraryClosedProfileDef.htm#8.15.3.1.4-Formal-propositions"
             )
 
+        kwargs = {
+            "ProfileName": name,
+            "ProfileType": profile_type,
+            "OuterCurve": outer_curve,
+        }
+        if self.file.schema == "IFC2X3":
+            kwargs["Position"] = self.file.create_entity(
+                "IfcAxis2Placement2D", self.file.create_entity("IfcCartesianPoint", [0.0, 0.0])
+            )
+
         if inner_curves:
             if not isinstance(inner_curves, collections.abc.Iterable):
                 inner_curves = [inner_curves]
@@ -337,13 +364,9 @@ class ShapeBuilder:
                         "Ref: https://ifc43-docs.standards.buildingsmart.org/IFC/RELEASE/IFC4x3/HTML/lexical/IfcArbitraryClosedProfileDef.htm#8.15.3.1.4-Formal-propositions"
                     )
 
-            profile = self.file.createIfcArbitraryProfileDefWithVoids(
-                ProfileName=name, ProfileType=profile_type, OuterCurve=outer_curve, InnerCurves=inner_curves
-            )
+            profile = self.file.create_entity("IfcArbitraryProfileDefWithVoids", InnerCurves=inner_curves, **kwargs)
         else:
-            profile = self.file.createIfcArbitraryClosedProfileDef(
-                ProfileName=name, ProfileType=profile_type, OuterCurve=outer_curve
-            )
+            profile = self.file.create_entity("IfcArbitraryClosedProfileDef", **kwargs)
         return profile
 
     def translate(self, curve_or_item, translation: Vector, create_copy=False):
@@ -465,8 +488,15 @@ class ShapeBuilder:
         point_2d = relative_point + mirror_point
         return point_2d
 
-    def get_axis2_placement_3d_matrix(self, axis2_placement_3d):
-        # > IfcAxis2Placement3D
+    def get_axis2_placement_3d_matrix(self, axis2_placement_3d: ifcopenshell.entity_instance) -> Matrix:
+        """
+        Generate a Matrix from IfcAxis2Placement3D.
+
+        :param axis2_placement_3d: IfcAxis2Placement3D
+        :type axis2_placement_3d: ifcopenshell.entity_instance
+        :return: generated matrix
+        :rtype: Matrix
+        """
         p = axis2_placement_3d
 
         M = Matrix.Identity(3)
@@ -483,6 +513,48 @@ class ShapeBuilder:
         rotation_matrix = M_X_rotation @ M_Z_rotation
 
         return rotation_matrix
+
+    def create_axis2_placement_3d(
+        self,
+        position: VectorTuple = (0.0, 0.0, 0.0),
+        z_axis: VectorTuple = (0.0, 0.0, 1.0),
+        x_axis: VectorTuple = (1.0, 0.0, 0.0),
+    ) -> ifcopenshell.entity_instance:
+        """
+        Create IfcAxis2Placement3D.
+
+        :param position: placement position (Axis), defaults to `(0.0, 0.0, 0.0)`
+        :type position: VectorTuple, optional
+        :param z_axis: local Z axis direction, defaults to `(0.0, 0.0, 1.0)`
+        :type z_axis: VectorTuple, optional
+        :param x_axis: local X axis direction (RefDirection), defaults to `(1.0, 0.0, 0.0)`
+        :type x_axis: VectorTuple, optional
+        :return: IfcAxis2Placement3D
+        :rtype: ifcopenshell.entity_instance
+        """
+        return self.file.createIfcAxis2Placement3D(
+            self.file.createIfcCartesianPoint(position),
+            Axis=self.file.createIfcDirection(z_axis),
+            RefDirection=self.file.createIfcDirection(x_axis),
+        )
+
+    def create_axis2_placement_3d_from_matrix(
+        self,
+        matrix: Union[npt.NDArray[np.float64], None] = None,
+    ) -> ifcopenshell.entity_instance:
+        """
+        Create IfcAxis2Placement3D from numpy matrix.
+
+        :param matrix: 4x4 transformation matrix, defaults to `np.eye(4)`
+        :type matrix: npt.NDArray[np.float64], optional
+        :return: IfcAxis2Placement3D
+        :rtype: ifcopenshell.entity_instance
+        """
+        if matrix is None:
+            matrix = np.eye(4, dtype=float)
+        return self.create_axis2_placement_3d(
+            position=matrix[:, 3][:3].tolist(), z_axis=matrix[:, 2][:3].tolist(), x_axis=matrix[:, 0][:3].tolist()
+        )
 
     def mirror(
         self,
@@ -599,22 +671,18 @@ class ShapeBuilder:
 
         return processed_objects if (multiple_objects or multiple_transformations) else processed_objects[0]
 
-    def sphere(self, radius: float = 1.0, center: Vector = Vector((0, 0, 0)).freeze()) -> ifcopenshell.entity_instance:
+    def sphere(self, radius: float = 1.0, center: VectorTuple = (0.0, 0.0, 0.0)) -> ifcopenshell.entity_instance:
         """
         :param radius: radius of the sphere, defaults to 1.0
         :type radius: float, optional
-        :param center: sphere position, defaults to zero-vector
-        :type center: Vector, optional
+        :param center: sphere position, defaults to `(0.0, 0.0, 0.0)`
+        :type center: VectorTuple, optional
 
         :return: IfcSphere
         :rtype: ifcopenshell.entity_instance
         """
 
-        ifc_position = self.file.createIfcAxis2Placement3D(
-            self.file.createIfcCartesianPoint(center),  # position
-            self.file.createIfcDirection((0.0, 0.0, 1.0)),  # Z-axis / Axis
-            self.file.createIfcDirection((1.0, 0.0, 0.0)),  # X-axis / RefDirection
-        )
+        ifc_position = self.create_axis2_placement_3d(position=center)
         return self.file.createIfcSphere(Radius=radius, Position=ifc_position)
 
     def extrude(
@@ -655,11 +723,7 @@ class ShapeBuilder:
         if position_y_axis:
             position_z_axis = position_x_axis.cross(position_y_axis)
 
-        ifc_position = self.file.createIfcAxis2Placement3D(
-            self.file.createIfcCartesianPoint(position),  # position
-            self.file.createIfcDirection(position_z_axis),  # Z-axis / Axis
-            self.file.createIfcDirection(position_x_axis),  # X-axis / RefDirection
-        )
+        ifc_position = self.create_axis2_placement_3d(position, position_z_axis, position_x_axis)
         ifc_direction = self.file.createIfcDirection(extrusion_vector)
         extruded_area = self.file.createIfcExtrudedAreaSolid(
             SweptArea=profile_or_curve, Position=ifc_position, ExtrudedDirection=ifc_direction, Depth=magnitude
@@ -698,6 +762,8 @@ class ShapeBuilder:
                 representation_type = "AdvancedSweptSolid"
             elif "IfcExtrudedAreaSolid" in item_types:
                 representation_type = "SweptSolid"
+            elif "IfcCsgSolid" in item_types:
+                representation_type = "CSG"
             elif items[0].is_a("IfcTessellatedItem"):
                 representation_type = "Tessellation"
             elif items[0].is_a("IfcCurve") and items[0].Dim == 3:

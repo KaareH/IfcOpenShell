@@ -21,7 +21,7 @@ import blenderbim.bim
 from blenderbim.bim.helper import prop_with_search
 from bpy.types import Panel, Menu, UIList
 from blenderbim.bim.ifc import IfcStore
-from blenderbim.bim.module.project.data import ProjectData
+from blenderbim.bim.module.project.data import ProjectData, LinksData
 
 
 class BIM_MT_project(Menu):
@@ -255,14 +255,21 @@ class BIM_PT_project_library(Panel):
         self.layout.use_property_split = True
         self.props = context.scene.BIMProjectProperties
         row = self.layout.row(align=True)
-        row.label(text=IfcStore.library_path or "No Library Loaded", icon="ASSET_MANAGER")
+        row.prop(self.props, "library_file", text="")
+        if self.props.library_file == "0":
+            row.operator("bim.select_library_file", icon="FILE_FOLDER", text="")
+        row = self.layout.row(align=True)
         if IfcStore.library_file:
-            row.label(text=IfcStore.library_file.schema)
+            row.label(
+                text=os.path.splitext(os.path.basename(IfcStore.library_path))[0]
+                + f" - {IfcStore.library_file.schema}",
+                icon="ASSET_MANAGER",
+            )
             row.operator("bim.append_library_element_by_query", text="", icon="APPEND_BLEND")
             row.operator("bim.save_library_file", text="", icon="EXPORT")
-        row.operator("bim.select_library_file", icon="FILE_FOLDER", text="")
-        if IfcStore.library_file:
             self.draw_library_ul()
+        else:
+            row.label(text="No Library Loaded", icon="ASSET_MANAGER")
 
     def draw_library_ul(self):
         if not self.props.library_elements:
@@ -306,6 +313,46 @@ class BIM_PT_links(Panel):
                 self.props,
                 "active_link_index",
             )
+
+        if LinksData.enable_culling:
+            row = self.layout.row(align=True)
+            row.label(text="Object Culling Enabled", icon="MOD_TRIANGULATE")
+
+        if not LinksData.linked_data or not self.props.links:
+            if self.props.links:
+                row = self.layout.row(align=True)
+                row.label(text="No Object Selected", icon="QUESTION")
+            return
+
+        row = self.layout.row(align=True)
+        row.label(text="")
+        row.operator("bim.append_inspected_linked_element", icon="APPEND_BLEND", text="")
+
+        for name, value in LinksData.linked_data["attributes"].items():
+            row = self.layout.row(align=True)
+            row.label(text=name)
+            row.label(text=value)
+
+        for pset in LinksData.linked_data["properties"]:
+            box = self.layout.box()
+            row = box.row(align=True)
+            row.label(text=pset[0], icon="COPY_ID")
+            for name, value in pset[1].items():
+                row = box.row(align=True)
+                row.label(text=name)
+                row.label(text=value)
+
+        if LinksData.linked_data["type_properties"]:
+            row = self.layout.row()
+            row.label(icon="LINKED", text="Type Properties")
+            for pset in LinksData.linked_data["type_properties"]:
+                box = self.layout.box()
+                row = box.row(align=True)
+                row.label(text=pset[0], icon="COPY_ID")
+                for name, value in pset[1].items():
+                    row = box.row(align=True)
+                    row.label(text=name)
+                    row.label(text=value)
 
 
 class BIM_UL_library(UIList):

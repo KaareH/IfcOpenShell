@@ -21,14 +21,18 @@ import copy
 import bmesh
 import mathutils.geometry
 import ifcopenshell
+import ifcopenshell.api
 import ifcopenshell.util.type
 import ifcopenshell.util.unit
 import ifcopenshell.util.element
+import ifcopenshell.util.placement
+import ifcopenshell.util.representation
 import blenderbim.bim.handler
 import blenderbim.tool as tool
 import blenderbim.core.type
 import blenderbim.core.geometry
 import blenderbim.core.material
+import blenderbim.core.root
 from math import pi, degrees, inf
 from mathutils import Vector, Matrix, Quaternion
 from blenderbim.bim.module.geometry.helper import Helper
@@ -92,7 +96,7 @@ class DumbProfileGenerator:
             should_add_representation=False,
             context=self.body_context,
         )
-        ifcopenshell.api.run("type.assign_type", self.file, related_object=element, relating_type=self.relating_type)
+        ifcopenshell.api.run("type.assign_type", self.file, related_objects=[element], relating_type=self.relating_type)
 
         material = ifcopenshell.util.element.get_material(element)
         material.CardinalPoint = self.cardinal_point
@@ -207,11 +211,18 @@ class DumbProfileRegenerator:
         return results
 
     def regenerate_from_type(self, usecase_path, ifc_file, settings):
-        obj = tool.Ifc.get_object(settings["related_object"])
-        if not obj or not obj.data or not obj.data.BIMMeshProperties.ifc_definition_id:
-            return
-        new_material = ifcopenshell.util.element.get_material(settings["relating_type"])
+        relating_type = settings["relating_type"]
+
+        new_material = ifcopenshell.util.element.get_material(relating_type)
         if not new_material or not new_material.is_a("IfcMaterialProfileSet"):
+            return
+
+        for related_object in settings["related_objects"]:
+            self._regenerate_from_type(related_object)
+
+    def _regenerate_from_type(self, related_object: ifcopenshell.entity_instance) -> None:
+        obj = tool.Ifc.get_object(related_object)
+        if not obj or not obj.data or not obj.data.BIMMeshProperties.ifc_definition_id:
             return
         DumbProfileRecalculator().recalculate([obj])
 
@@ -1013,17 +1024,30 @@ class EditExtrusionAxis(bpy.types.Operator, tool.Ifc.Operator):
         obj = context.active_object
         element = tool.Ifc.get_entity(obj)
 
-        start = obj.matrix_world @ obj.data.vertices[0].co.copy()
-        end = obj.matrix_world @ obj.data.vertices[1].co.copy()
+        matrix = obj.matrix_world
+        previous_z_axis = matrix.col[2].to_3d().normalized()
+
+        start = matrix @ obj.data.vertices[0].co
+        end = matrix @ obj.data.vertices[1].co
         depth = (end - start).length
         z_axis = (end - start).normalized()
-        y_axis = Vector((0, 0, 1))
-        # making sure z_axis != y_axis
-        if z_axis == y_axis:
-            y_axis = Vector((0, 1, 0))
 
-        x_axis = y_axis.cross(z_axis).normalized()
-        y_axis = z_axis.cross(x_axis).normalized()
+        # if z-axis didn't changed we can just reuse the previous rotation
+        if not tool.Cad.are_vectors_equal(previous_z_axis, z_axis):
+            y_axis = Vector((0, 0, 1))
+            # making sure z_axis != y_axis
+            if z_axis == y_axis:
+                y_axis = Vector((0, 1, 0))
+
+            x_axis = y_axis.cross(z_axis).normalized()
+            y_axis = z_axis.cross(x_axis).normalized()
+
+            # update basises
+            matrix.col[0].xyz = x_axis
+            matrix.col[1].xyz = y_axis
+            matrix.col[2].xyz = z_axis
+
+        matrix.translation = start
 
         body = ifcopenshell.util.representation.get_representation(element, "Model", "Body", "MODEL_VIEW")
         blenderbim.core.geometry.switch_representation(
@@ -1036,16 +1060,6 @@ class EditExtrusionAxis(bpy.types.Operator, tool.Ifc.Operator):
             should_sync_changes_first=False,
         )
 
-        matrix = Matrix(
-            (
-                [x_axis[0], y_axis[0], z_axis[0], start.x],
-                [x_axis[1], y_axis[1], z_axis[1], start.y],
-                [x_axis[2], y_axis[2], z_axis[2], start.z],
-                [0, 0, 0, 1],
-            )
-        )
-
-        obj.matrix_world = matrix
         bpy.context.view_layer.update()
 
         joiner = DumbProfileJoiner()

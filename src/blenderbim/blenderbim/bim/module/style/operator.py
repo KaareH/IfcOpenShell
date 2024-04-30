@@ -330,16 +330,21 @@ class ActivateExternalStyle(bpy.types.Operator, tool.Ifc.Operator):
         style_path = Path(tool.Ifc.resolve_uri(external_style.Location))
 
         if style_path.suffix != ".blend":
-            self.report({"ERROR"}, f"Error loading external style - only Blender external styles are supported")
+            self.report(
+                {"ERROR"},
+                f"Error loading external style for \"{material.name}\" - only Blender external styles are supported",
+            )
             return {"CANCELLED"}
 
         if not style_path.exists():
-            self.report({"ERROR"}, f"Error loading external style - cannot find file: '{style_path}'")
+            self.report(
+                {"ERROR"}, f"Error loading external style for \"{material.name}\" - cannot find file: '{style_path}'"
+            )
             return {"CANCELLED"}
 
         db = tool.Blender.append_data_block(str(style_path), data_block_type, data_block)
         if not db["data_block"]:
-            self.report({"ERROR"}, f"Error loading external style - {db['msg']}")
+            self.report({"ERROR"}, f"Error loading external style for \"{material.name}\" - {db['msg']}")
             return {"CANCELLED"}
 
         self.copy_material_attributes(db["data_block"], material)
@@ -486,6 +491,22 @@ class EnableAddingPresentationStyle(bpy.types.Operator, tool.Ifc.Operator):
     def _execute(self, context):
         props = bpy.context.scene.BIMStylesProperties
         props.is_adding = True
+
+
+class DuplicateStyle(bpy.types.Operator, tool.Ifc.Operator):
+    bl_idname = "bim.duplicate_style"
+    bl_label = "Duplicate Style"
+    bl_options = {"REGISTER", "UNDO"}
+
+    style: bpy.props.IntProperty(name="Style ID")
+
+    def _execute(self, context):
+        style_type = context.scene.BIMStylesProperties.style_type
+        ifc_file = tool.Ifc.get()
+        style = ifc_file.by_id(self.style)
+        tool.Style.duplicate_style(style)
+        bpy.ops.bim.disable_editing_styles()
+        bpy.ops.bim.load_styles(style_type=style_type)
 
 
 class DisableAddingPresentationStyle(bpy.types.Operator, tool.Ifc.Operator):

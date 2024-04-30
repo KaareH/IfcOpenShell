@@ -39,6 +39,12 @@ class Material(blenderbim.core.tool.Material):
         bpy.context.scene.BIMMaterialProperties.is_editing = False
 
     @classmethod
+    def duplicate_material(cls, material: ifcopenshell.entity_instance) -> ifcopenshell.entity_instance:
+        new_material = ifcopenshell.util.element.copy_deep(tool.Ifc.get(), material)
+        new_material.Name = material.Name + "_copy"
+        return new_material
+
+    @classmethod
     def enable_editing_materials(cls):
         bpy.context.scene.BIMMaterialProperties.is_editing = True
 
@@ -219,7 +225,7 @@ class Material(blenderbim.core.tool.Material):
             material = tool.Ifc.get().by_type("IfcMaterial")[0]
         else:
             blenderbim.core.material.unassign_material(tool.Ifc, tool.Material, objects=[tool.Ifc.get_object(element)])
-        tool.Ifc.run("material.assign_material", product=element, type="IfcMaterialProfileSet", material=material)
+        tool.Ifc.run("material.assign_material", products=[element], type="IfcMaterialProfileSet", material=material)
         assinged_material = cls.get_material(element)
         material_profile = tool.Ifc.run("material.add_profile", profile_set=assinged_material, material=material)
         return material_profile

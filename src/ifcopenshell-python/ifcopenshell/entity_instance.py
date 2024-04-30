@@ -30,6 +30,7 @@ import functools
 import subprocess
 import sys
 import time
+from typing import Union, Any, Callable, TypeVar, overload
 
 from . import ifcopenshell_wrapper
 from . import settings
@@ -38,6 +39,8 @@ try:
     import logging
 except ImportError as e:
     logging = type("logger", (object,), {"exception": staticmethod(lambda s: print(s))})
+
+T = TypeVar("T")
 
 
 def set_derived_attribute(*args):
@@ -64,8 +67,9 @@ def set_unsupported_attribute(*args):
 _method_dict = {}
 
 
-def register_schema_attributes(schema):
+def register_schema_attributes(schema: ifcopenshell_wrapper.schema_definition) -> None:
     for decl in schema.declarations():
+        decl: ifcopenshell_wrapper.declaration
         if hasattr(decl, "argument_types"):
             fq_name = ".".join((schema.name(), decl.name()))
 
@@ -116,6 +120,8 @@ class entity_instance(object):
         print(products[0].Representation)
         >>> #423=IfcProductDefinitionShape($,$,(#409,#421))
     """
+
+    wrapped_data: ifcopenshell_wrapper.entity_instance
 
     def __init__(self, e, file=None):
         if isinstance(e, tuple):
@@ -193,7 +199,36 @@ class entity_instance(object):
             )
 
     @staticmethod
-    def walk(f, g, value):
+    def walk(f: Callable[[Any], bool], g: Callable[[Any], Any], value: Any) -> Any:
+        """
+         Applies transformation to `value` based on a given condition.
+         If value is a nested structure (e.g., a list or a tuple) will apply transformation to it's elements.
+        .
+
+         :param f: A callable that takes a single argument and returns a boolean value. It represents the condition
+         :type f: Callable
+         :param g: A callable that takes a single argument and returns a transformed value. It represents the transformation
+         :type g: Callable
+         :param value: Any object, the input value to be processed
+         :type value: Any
+         :return: Transformed value
+         :rtype: Any
+
+         Example:
+
+         .. code:: python
+
+             # Define condition and transformation functions
+             condition = lambda v: v == old
+             transform = lambda v: new
+
+             # Usage example
+             attribute_value = element.RelatedElements
+             print(old in attribute_value, new in attribute_value) # True, False
+             result = element.walk(condition, transform, element.RelatedElements)
+             print(old in attribute_value, new in attribute_value) # False, True
+        """
+
         if isinstance(value, (tuple, list)):
             return tuple(map(functools.partial(entity_instance.walk, f, g), value))
         elif f(value):
@@ -221,7 +256,7 @@ class entity_instance(object):
 
         return entity_instance.walk(is_instance, unwrap, v)
 
-    def attribute_type(self, attr):
+    def attribute_type(self, attr: int) -> str:
         """Return the data type of a positional attribute of the element
 
         :param attr: The index of the attribute
@@ -231,7 +266,7 @@ class entity_instance(object):
         attr_idx = attr if isinstance(attr, numbers.Integral) else self.wrapped_data.get_argument_index(attr)
         return self.wrapped_data.get_argument_type(attr_idx)
 
-    def attribute_name(self, attr_idx):
+    def attribute_name(self, attr_idx: int) -> str:
         """Return the name of a positional attribute of the element
 
         :param attr_idx: The index of the attribute
@@ -240,16 +275,24 @@ class entity_instance(object):
         """
         return self.wrapped_data.get_argument_name(attr_idx)
 
-    def __setattr__(self, key, value):
+    def __setattr__(self, key: str, value: Any) -> None:
         index = self.wrapped_data.get_argument_index(key)
-        self[index] = value
+        try:
+            self[index] = value
+        except IndexError as e:
+            # get_argument_index returns 0xFFFFFFFF if attribute is not found
+            if index == 0xFFFFFFFF:
+                raise AttributeError(
+                    "entity instance of type '%s' has no attribute '%s'" % (self.wrapped_data.is_a(True), key)
+                )
+            raise e
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: int) -> Any:
         if key < 0 or key >= len(self):
             raise IndexError("Attribute index {} out of range for instance of type {}".format(key, self.is_a()))
         return entity_instance.wrap_value(self.wrapped_data.get_argument(key), self.wrapped_data.file)
 
-    def __setitem__(self, idx, value):
+    def __setitem__(self, idx: int, value: T) -> T:
         if self.wrapped_data.file and self.wrapped_data.file.transaction:
             self.wrapped_data.file.transaction.store_edit(self, idx, value)
 
@@ -260,7 +303,15 @@ class entity_instance(object):
 
         if value is None:
             if method is not set_derived_attribute:
-                self.wrapped_data.setArgumentAsNull(idx)
+                try:
+                    self.wrapped_data.setArgumentAsNull(idx)
+                except RuntimeError as e:
+                    if e.args == ("Attribute not set",):
+                        raise ValueError(
+                            "attribute '%s' is not optional for entity instance of type '%s'"
+                            % (self.wrapped_data.get_argument_name(idx), self.wrapped_data.is_a(True))
+                        )
+                    raise e
         else:
             self.method_list[idx](self.wrapped_data, idx, entity_instance.unwrap_value(value))
 
@@ -272,7 +323,7 @@ class entity_instance(object):
     def __repr__(self):
         return repr(self.wrapped_data)
 
-    def to_string(self, valid_spf=True):
+    def to_string(self, valid_spf=True) -> str:
         """Returns a string representation of the current entity instance.
         Equal to str(self) when valid_spf=False. When valid_spf is True
         returns a representation of the string that conforms to valid Step
@@ -283,15 +334,25 @@ class entity_instance(object):
 
         return self.wrapped_data.to_string(valid_spf)
 
-    def is_a(self, *args):
+    @overload
+    def is_a(self) -> str: ...
+    @overload
+    def is_a(self, ifc_class: str) -> bool: ...
+    @overload
+    def is_a(self, with_schema: bool) -> str: ...
+    def is_a(self, *args: Union[str, bool]) -> Union[str, bool]:
         """Return the IFC class name of an instance, or checks if an instance belongs to a class.
 
         The check will also return true if a parent class name is provided.
 
         :param args: If specified, is a case insensitive IFC class name to check
-        :type args: string
+            or if specified as a boolean then will define whether
+            returned IFC class name should include schema name
+            (e.g. "IFC4.IfcWall" if `True` and "IfcWall" if `False`).
+            If omitted will act as `False`.
+        :type args: Union[str, bool]
         :returns: Either the name of the class, or a boolean if it passes the check
-        :rtype: string|bool
+        :rtype: Union[str, bool]
 
         Example:
 
@@ -306,7 +367,7 @@ class entity_instance(object):
         """
         return self.wrapped_data.is_a(*args)
 
-    def id(self):
+    def id(self) -> int:
         """Return the STEP numerical identifier
 
         :rtype: int
@@ -335,7 +396,7 @@ class entity_instance(object):
                     other.wrapped_data.file_pointer(),
                 )
 
-    def is_entity(self):
+    def is_entity(self) -> bool:
         """Tests whether the instance is an entity type as opposed to a simple data type.
 
         Returns:
@@ -430,7 +491,9 @@ class entity_instance(object):
             )
         )
 
-    def get_info(self, include_identifier=True, recursive=False, return_type=dict, ignore=(), scalar_only=False):
+    def get_info(
+        self, include_identifier=True, recursive=False, return_type=dict, ignore=(), scalar_only=False
+    ) -> dict:
         """Return a dictionary of the entity_instance's properties (Python and IFC) and their values.
 
         :param include_identifier: Whether or not to include the STEP numerical identifier

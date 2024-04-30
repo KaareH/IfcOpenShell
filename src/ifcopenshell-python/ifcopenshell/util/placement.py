@@ -17,9 +17,16 @@
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
 import numpy as np
+import numpy.typing as npt
+import ifcopenshell
+from typing import Literal, Iterable
 
 
-def a2p(o, z, x):
+MatrixType = npt.NDArray[np.float64]
+"""`npt.NDArray[np.float64]`"""
+
+
+def a2p(o: Iterable[float], z: Iterable[float], x: Iterable[float]) -> MatrixType:
     """Converts a location, X, and Z axis vector to a 4x4 transformation matrix
 
     IFC uses a right-handed coordinate system, so it is not necessary to
@@ -32,7 +39,7 @@ def a2p(o, z, x):
     :param x: The +X vector / axis of the matrix
     :type x: iterable[float]
     :return: A 4x4 numpy matrix
-    :rtype: np.array[np.array[float]]
+    :rtype: MatrixType
     """
     x = x / np.linalg.norm(x)
     z = z / np.linalg.norm(z)
@@ -44,7 +51,7 @@ def a2p(o, z, x):
     return r.T
 
 
-def get_axis2placement(placement):
+def get_axis2placement(placement: ifcopenshell.entity_instance) -> MatrixType:
     """Parses an IfcAxis2Placement (2D or 3D) to a 4x4 transformation matrix
 
     Note that this function only parses a single placement axis. If you want to
@@ -55,13 +62,24 @@ def get_axis2placement(placement):
     :param placement: The IfcLocalPlacement enitity
     :type placement: ifcopenshell.entity_instance.entity_instance
     :return: A 4x4 numpy matrix
-    :rtype: np.array[np.array[float]]
+    :rtype: MatrixType
     """
-    if placement.is_a("IfcAxis2Placement3D"):
+    ifc_class = placement.is_a()
+    if ifc_class in ("IfcAxis2Placement3D", "IfcAxis2PlacementLinear"):
         z = np.array(placement.Axis.DirectionRatios if placement.Axis else (0, 0, 1))
         x = np.array(placement.RefDirection.DirectionRatios if placement.RefDirection else (1, 0, 0))
-        o = placement.Location.Coordinates
-    elif placement.is_a("IfcAxis2Placement2D"):
+        location = placement.Location
+        if coordinates := getattr(location, "Coordinates", None):
+            o = coordinates
+        else:
+            ifc_class = location.is_a()
+            print(
+                f'WARNING. Placement location of type "{ifc_class}" '
+                f"is not yet supported and placement {placement} may be placed incorrectly."
+            )
+            o = (0.0, 0.0, 0.0)
+
+    elif ifc_class == "IfcAxis2Placement2D":
         z = np.array((0, 0, 1))
         if placement.RefDirection:
             x = np.array(placement.RefDirection.DirectionRatios)
@@ -69,10 +87,17 @@ def get_axis2placement(placement):
         else:
             x = np.array((1, 0, 0))
         o = (*placement.Location.Coordinates, 0.0)
+
+    elif ifc_class == "IfcAxis1Placement":
+        axis = placement.Axis
+        z = np.array(axis.DirectionRatios if axis else (0, 0, 1))
+        x = np.array((1, 0, 0))
+        o = placement.Location.Coordinates
+
     return a2p(o, z, x)
 
 
-def get_local_placement(placement):
+def get_local_placement(placement: ifcopenshell.entity_instance) -> MatrixType:
     """Parse a local placement into a 4x4 transformation matrix
 
     This is typically used to find the location and rotation of an element. The
@@ -95,18 +120,18 @@ def get_local_placement(placement):
     :param placement: The IfcLocalPlacement entity
     :type placement: ifcopenshell.entity_instance.entity_instance
     :return: A 4x4 numpy matrix
-    :rtype: np.array[np.array[float]]
+    :rtype: MatrixType
     """
     if placement is None:
         return np.eye(4)
-    if placement.PlacementRelTo is None:
+    if (rel_to := placement.PlacementRelTo) is None:
         parent = np.eye(4)
     else:
-        parent = get_local_placement(placement.PlacementRelTo)
+        parent = get_local_placement(rel_to)
     return np.dot(parent, get_axis2placement(placement.RelativePlacement))
 
 
-def get_cartesiantransformationoperator3d(inst):
+def get_cartesiantransformationoperator3d(inst: ifcopenshell.entity_instance) -> MatrixType:
     """Parses an IfcCartesianTransformationOperator into a 4x4 transformation matrix
 
     Note that in general you will not need to call this directly. See
@@ -115,7 +140,7 @@ def get_cartesiantransformationoperator3d(inst):
     :param item: The IfcCartesianTransformationOperator entity
     :type item: ifcopenshell.entity_instance.entity_instance
     :return: A 4x4 numpy transformation matrix
-    :rtype: np.array[np.array[float]]
+    :rtype: MatrixType
     """
     origin = np.array(inst.LocalOrigin.Coordinates)
     axis1 = np.array((1.0, 0.0, 0.0))
@@ -151,7 +176,7 @@ def get_cartesiantransformationoperator3d(inst):
     return m4
 
 
-def get_mappeditem_transformation(item):
+def get_mappeditem_transformation(item: ifcopenshell.entity_instance) -> MatrixType:
     """Parse an IfcMappedItem into a 4x4 transformation matrix
 
     Mapped items take a representation with an origin and transform them with a
@@ -161,7 +186,7 @@ def get_mappeditem_transformation(item):
     :param item: The IfcMappedItem entity
     :type item: ifcopenshell.entity_instance.entity_instance
     :return: A 4x4 numpy transformation matrix
-    :rtype: np.array[np.array[float]]
+    :rtype: MatrixType
     """
     m4 = get_axis2placement(item.MappingSource.MappingOrigin)
     # TODO 2d
@@ -169,7 +194,7 @@ def get_mappeditem_transformation(item):
         return get_cartesiantransformationoperator3d(item.MappingTarget) @ m4
 
 
-def get_storey_elevation(storey):
+def get_storey_elevation(storey: ifcopenshell.entity_instance) -> float:
     """Get the Z elevation in project units of a buildling storey
 
     Building storeys store elevation in two possible locations: the Z value of
@@ -186,7 +211,7 @@ def get_storey_elevation(storey):
     return getattr(storey, "Elevation", 0.0) or 0.0
 
 
-def rotation(angle, axis, is_degrees=True):
+def rotation(angle: float, axis: Literal["X", "Y", "Z"], is_degrees=True) -> MatrixType:
     """Create a 4x4 numpy matrix representing an euler rotation
 
     :param angle: The angle of rotation
@@ -197,11 +222,12 @@ def rotation(angle, axis, is_degrees=True):
         radians. Defaults to true (i.e. degrees).
     :type is_degrees: bool
     :return: A 4x4 numpy rotation matrix
-    :rtype: np.array[np.array[float]]
+    :rtype: MatrixType
     """
     theta = np.radians(angle) if is_degrees else angle
     cos, sin = np.cos(theta), np.sin(theta)
 
+    # fmt: off
     if axis == "X":
         return np.array([
             [1, 0, 0, 0],
@@ -223,3 +249,4 @@ def rotation(angle, axis, is_degrees=True):
             [0, 0, 1, 0],
             [0, 0, 0, 1]
         ])
+    # fmt: on

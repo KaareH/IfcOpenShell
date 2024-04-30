@@ -17,26 +17,37 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import bpy
-from . import ui, prop, operator
+from . import ui, prop, operator, workspace, gizmo, decorator
 
 classes = (
     operator.AppendEntireLibrary,
+    operator.AppendInspectedLinkedElement,
     operator.AppendLibraryElement,
     operator.AppendLibraryElementByQuery,
     operator.AssignLibraryDeclaration,
+    operator.BIM_OT_load_clipping_planes,
+    operator.BIM_OT_save_clipping_planes,
     operator.ChangeLibraryElement,
+    operator.CreateClippingPlane,
     operator.CreateProject,
+    operator.DisableCulling,
     operator.DisableEditingHeader,
     operator.EditHeader,
+    operator.EnableCulling,
     operator.EnableEditingHeader,
     operator.ExportIFC,
+    operator.FlipClippingPlane,
     operator.ImportIFC,
     operator.LinkIfc,
     operator.LoadLink,
+    operator.LoadLinkedProject,
     operator.LoadProject,
     operator.LoadProjectElements,
     operator.NewProject,
+    operator.QueryLinkedElement,
+    operator.RefreshClippingPlanes,
     operator.RefreshLibrary,
+    operator.ReloadLink,
     operator.RevertProject,
     operator.RewindLibrary,
     operator.SaveLibraryFile,
@@ -48,7 +59,7 @@ classes = (
     operator.UnlinkIfc,
     operator.UnloadLink,
     operator.UnloadProject,
-    operator.ReloadLink,
+    workspace.ExploreHotkey,
     prop.LibraryElement,
     prop.FilterCategory,
     prop.Link,
@@ -62,6 +73,7 @@ classes = (
     ui.BIM_UL_library,
     ui.BIM_UL_filter_categories,
     ui.BIM_UL_links,
+    gizmo.ClippingPlane,
 )
 
 
@@ -69,7 +81,10 @@ addon_keymaps = []
 
 
 def register():
+    if not bpy.app.background:
+        bpy.utils.register_tool(workspace.ExploreTool, after={"builtin.transform"}, separator=True, group=False)
     bpy.types.Scene.BIMProjectProperties = bpy.props.PointerProperty(type=prop.BIMProjectProperties)
+    bpy.app.handlers.load_post.append(decorator.toggle_decorations_on_load)
     bpy.types.TOPBAR_MT_file.prepend(ui.file_menu)
     bpy.types.TOPBAR_MT_file_context_menu.prepend(ui.file_menu)
     wm = bpy.context.window_manager
@@ -88,9 +103,12 @@ def register():
 
 
 def unregister():
+    if not bpy.app.background:
+        bpy.utils.unregister_tool(workspace.ExploreTool)
+    del bpy.types.Scene.BIMProjectProperties
+    bpy.app.handlers.load_post.remove(decorator.toggle_decorations_on_load)
     bpy.types.TOPBAR_MT_file.remove(ui.file_menu)
     bpy.types.TOPBAR_MT_file_context_menu.remove(ui.file_menu)
-    del bpy.types.Scene.BIMProjectProperties
 
     wm = bpy.context.window_manager
     kc = wm.keyconfigs.addon

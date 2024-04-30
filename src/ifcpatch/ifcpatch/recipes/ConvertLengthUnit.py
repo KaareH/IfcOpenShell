@@ -22,16 +22,23 @@ import ifcopenshell.api.owner.settings
 import ifcopenshell.util.pset
 import ifcopenshell.util.element
 import ifcopenshell.util.unit
+from logging import Logger
 
 
 class Patcher:
-    def __init__(self, src, file, logger, unit="METERS"):
+    def __init__(
+        self,
+        src: str,
+        file: ifcopenshell.file,
+        logger: Logger,
+        unit: str = "METER",
+    ):
         """Converts the length unit of a model to the specified unit
 
-        Allowed metric units include METERS, MILLIMETERS, CENTIMETERS, etc.
-        Allowed imperial units include INCHES, FEET, MILES.
+        Allowed metric units include METER, MILLIMETER, CENTIMETER, etc.
+        Allowed imperial units include INCH, FOOT, MILE.
 
-        :param unit: The name of the desired unit.
+        :param unit: The name of the desired unit, defaults to "METER"
         :type unit: str
 
         Example:
@@ -39,16 +46,16 @@ class Patcher:
         .. code:: python
 
             # Convert to millimeters
-            ifcpatch.execute({"input": "input.ifc", "file": model, "recipe": "ConvertLengthUnit", "arguments": ["MILLIMETERS"]})
+            ifcpatch.execute({"input": "input.ifc", "file": model, "recipe": "ConvertLengthUnit", "arguments": ["MILLIMETER"]})
 
             # Convert to feet
-            ifcpatch.execute({"input": "input.ifc", "file": model, "recipe": "ConvertLengthUnit", "arguments": ["FEET"]})
+            ifcpatch.execute({"input": "input.ifc", "file": model, "recipe": "ConvertLengthUnit", "arguments": ["FOOT"]})
         """
         self.src = src
         self.file = file
         self.logger = logger
         self.unit = unit
-        self.file_patched: ifcopenshell.file = None
+        self.file_patched: ifcopenshell.file
 
     def patch(self):
         self.file_patched = ifcopenshell.util.unit.convert_file_length_units(self.file, self.unit)

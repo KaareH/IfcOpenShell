@@ -44,7 +44,12 @@ class BIM_OT_aggregate_assign_object(bpy.types.Operator, Operator):
     def _execute(self, context):
         relating_obj = None
         if self.relating_object:
-            relating_obj = tool.Ifc.get_object(tool.Ifc.get().by_id(self.relating_object))
+            element = tool.Ifc.get().by_id(self.relating_object)
+            if element.IsDecomposedBy:
+                relating_obj = tool.Ifc.get_object(element)
+            else:
+                assembly = element.Decomposes[0].RelatingObject
+                relating_obj = tool.Ifc.get_object(assembly)
         elif context.active_object:
             relating_obj = context.active_object
         if not relating_obj:
@@ -89,9 +94,9 @@ class BIM_OT_aggregate_unassign_object(bpy.types.Operator, Operator):
                 relating_obj=tool.Ifc.get_object(aggregate),
                 related_obj=tool.Ifc.get_object(element),
             )
-            
+
             # Removes Pset related to Linked Aggregates
-            pset = ifcopenshell.util.element.get_pset(element, 'BBIM_Linked_Aggregate')
+            pset = ifcopenshell.util.element.get_pset(element, "BBIM_Linked_Aggregate")
             if pset:
                 pset = tool.Ifc.get().by_id(pset["id"])
                 ifcopenshell.api.run("pset.remove_pset", tool.Ifc.get(), pset=pset)
@@ -127,6 +132,7 @@ class BIM_OT_add_aggregate(bpy.types.Operator, tool.Ifc.Operator):
     bl_options = {"REGISTER", "UNDO"}
     obj: bpy.props.StringProperty()
     ifc_class: bpy.props.StringProperty(name="IFC Class", default="IfcElementAssembly")
+    aggregate_name: bpy.props.StringProperty(name="Name", default="Default_Name")
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
@@ -134,13 +140,15 @@ class BIM_OT_add_aggregate(bpy.types.Operator, tool.Ifc.Operator):
     def draw(self, context):
         row = self.layout
         row.prop(self, "ifc_class")
+        row = self.layout
+        row.prop(self, "aggregate_name")
 
     def _execute(self, context):
         try:
             ifc_class = tool.Ifc.schema().declaration_by_name(self.ifc_class).name()
         except:
             return
-        aggregate = self.create_aggregate(context, ifc_class)
+        aggregate = self.create_aggregate(context, ifc_class, self.aggregate_name)
 
         for obj in context.selected_objects:
             element = tool.Ifc.get_entity(obj)
@@ -168,8 +176,8 @@ class BIM_OT_add_aggregate(bpy.types.Operator, tool.Ifc.Operator):
                 )
             core.assign_object(tool.Ifc, tool.Aggregate, tool.Collector, relating_obj=aggregate, related_obj=obj)
 
-    def create_aggregate(self, context, ifc_class):
-        aggregate = bpy.data.objects.new("Assembly", None)
+    def create_aggregate(self, context, ifc_class, aggregate_name):
+        aggregate = bpy.data.objects.new(aggregate_name, None)
         aggregate.location = context.scene.cursor.location
         bpy.ops.bim.assign_class(obj=aggregate.name, ifc_class=ifc_class)
         return aggregate
@@ -185,12 +193,17 @@ class BIM_OT_select_parts(bpy.types.Operator):
 
     def execute(self, context):
         self.file = IfcStore.get_file()
-        obj = bpy.data.objects.get(self.obj) or context.active_object
-        parts = ifcopenshell.util.element.get_parts(tool.Ifc.get_entity(obj))
-        parts_objs = set(tool.Ifc.get_object(part) for part in parts)
-        selectable_parts_objs = set(context.selectable_objects).intersection(parts_objs)
-        for selectable_part_obj in selectable_parts_objs:
-            selectable_part_obj.select_set(True)
+        # obj = bpy.data.objects.get(self.obj) or context.active_object
+
+        for obj in context.selected_objects:
+            parts = ifcopenshell.util.element.get_parts(tool.Ifc.get_entity(obj))
+            if parts:
+                parts_objs = set(tool.Ifc.get_object(part) for part in parts)
+                selectable_parts_objs = set(context.selectable_objects).intersection(parts_objs)
+                for selectable_part_obj in selectable_parts_objs:
+                    selectable_part_obj.select_set(True)
+            else:
+                obj.select_set(False)
         return {"FINISHED"}
 
 
@@ -201,15 +214,54 @@ class BIM_OT_select_aggregate(bpy.types.Operator):
     bl_label = "Select Aggregate"
     bl_options = {"REGISTER", "UNDO"}
     obj: bpy.props.StringProperty()
+    select_parts: bpy.props.BoolProperty(default=False)
+
+    @classmethod
+    def description(cls, context, properties):
+        if properties.select_parts:
+            return "Select Aggregate and Parts"
+        else:
+            return "Select Aggregate"
 
     def execute(self, context):
         self.file = IfcStore.get_file()
-        obj = bpy.data.objects.get(self.obj) or context.active_object
-        aggregate = ifcopenshell.util.element.get_aggregate(tool.Ifc.get_entity(obj))
-        aggregate_obj = tool.Ifc.get_object(aggregate)
-        if aggregate_obj in context.selectable_objects:
-            aggregate_obj.select_set(True)
-            bpy.context.view_layer.objects.active = aggregate_obj
+
+        # obj = bpy.data.objects.get(self.obj) or context.active_object
+        # aggregate = ifcopenshell.util.element.get_aggregate(tool.Ifc.get_entity(obj))
+        # aggregate_obj = tool.Ifc.get_object(aggregate)
+        
+        all_parts = []
+        for obj in context.selected_objects:
+            element = tool.Ifc.get_entity(obj)
+            if element:
+                aggregate = ifcopenshell.util.element.get_aggregate(element)
+                if aggregate:
+                    all_parts.append(aggregate)
+                    obj.select_set(False)
+                else:
+                    pass
+            if not element:
+                obj.select_set(False)
+        
+        if self.select_parts:
+            all_objs = []
+            for part in all_parts:
+                if part.IsDecomposedBy:
+                    for subpart in part.IsDecomposedBy[0].RelatedObjects:
+                        all_parts.append(subpart)
+                all_objs.append(part)
+
+            for element in all_objs:
+                obj = tool.Ifc.get_object(element)
+                if obj:
+                    obj.select_set(True)
+
+        else:
+            for aggregate_element in all_parts:
+                aggregate_obj = tool.Ifc.get_object(aggregate_element)
+                aggregate_obj.select_set(True)
+                bpy.context.view_layer.objects.active = aggregate_obj      
+
         return {"FINISHED"}
 
 
@@ -237,6 +289,7 @@ class BIM_OT_add_part_to_object(bpy.types.Operator, Operator):
             part_name=self.part_name,
         )
 
+
 class BIM_OT_break_link_to_other_aggregates(bpy.types.Operator, Operator):
     bl_idname = "bim.break_link_to_other_aggregates"
     bl_label = "Break link to other aggregates"
@@ -251,48 +304,72 @@ class BIM_OT_break_link_to_other_aggregates(bpy.types.Operator, Operator):
             return []
 
         parts = ifcopenshell.util.element.get_parts(aggregate)
-        
+
         for part in parts:
-            pset = ifcopenshell.util.element.get_pset(part, 'BBIM_Linked_Aggregate')
+            pset = ifcopenshell.util.element.get_pset(part, "BBIM_Linked_Aggregate")
             pset = tool.Ifc.get().by_id(pset["id"])
             ifcopenshell.api.run("pset.remove_pset", tool.Ifc.get(), pset=pset)
-        
+
         linked_aggregate_group = [
             r.RelatingGroup
             for r in getattr(aggregate, "HasAssignments", []) or []
             if r.is_a("IfcRelAssignsToGroup")
             if "BBIM_Linked_Aggregate" in r.RelatingGroup.Name
         ]
-        tool.Ifc.run("group.unassign_group", group=linked_aggregate_group[0], product=aggregate)
-        
+        tool.Ifc.run("group.unassign_group", group=linked_aggregate_group[0], products=[aggregate])
+
         return {"FINISHED"}
+
 
 class BIM_OT_select_linked_aggregates(bpy.types.Operator, Operator):
     bl_idname = "bim.select_linked_aggregates"
     bl_label = "Select linked aggregates"
     bl_options = {"REGISTER", "UNDO"}
+    select_parts: bpy.props.BoolProperty(default=False)
+
+    @classmethod
+    def description(cls, context, properties):
+        if properties.select_parts:
+            return "Select all aggregates, subaggregates and all their parts"
+        else:
+            return "Select all aggregates"
 
     def _execute(self, context):
-        element = tool.Ifc.get_entity(bpy.context.active_object)
-        aggregate = ifcopenshell.util.element.get_aggregate(element)
-        if not aggregate:
-            return []
-        if not element:
-            return []
-        
-        linked_aggregate_group = [
-            r.RelatingGroup
-            for r in getattr(aggregate, "HasAssignments", []) or []
-            if r.is_a("IfcRelAssignsToGroup")
-            if "BBIM_Linked_Aggregate" in r.RelatingGroup.Name
-        ]
         
         for obj in context.selected_objects:
             obj.select_set(False)
-            
-        for rel in linked_aggregate_group[0].IsGroupedBy or []:
-            for element in rel.RelatedObjects:
-                obj = tool.Ifc.get_object(element)
-                obj.select_set(True)
+            element = tool.Ifc.get_entity(obj)
+            aggregate = ifcopenshell.util.element.get_aggregate(element)
+            if not aggregate:
+                continue
+            if not element:
+                continue
+
+            linked_aggregate_group = [
+                r.RelatingGroup
+                for r in getattr(aggregate, "HasAssignments", []) or []
+                if r.is_a("IfcRelAssignsToGroup")
+                if "BBIM_Linked_Aggregate" in r.RelatingGroup.Name
+            ]
+
+            group_rel = linked_aggregate_group[0].IsGroupedBy or []
+            for group_link in group_rel:
+                parts = list(group_link.RelatedObjects)
+                if self.select_parts:
+                    parts_objs = []
+                    for part in parts:
+                        if part.IsDecomposedBy:
+                            for subpart in part.IsDecomposedBy[0].RelatedObjects:
+                                parts.append(subpart)
+                        parts_objs.append(part)
+
+                    for element in parts_objs:
+                        obj = tool.Ifc.get_object(element)
+                        if obj:
+                            obj.select_set(True)
+                else:
+                    for element in parts:
+                        obj = tool.Ifc.get_object(element)
+                        obj.select_set(True)
 
         return {"FINISHED"}

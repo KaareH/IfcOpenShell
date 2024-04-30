@@ -23,6 +23,7 @@ import bpy.utils.previews
 import blenderbim
 import importlib
 from . import handler, ui, prop, operator, helper
+from typing import Callable, Union
 
 try:
     from blenderbim.translations import translations_dict
@@ -96,9 +97,12 @@ for name in modules.keys():
 classes = [
     operator.AddIfcFile,
     operator.BIM_OT_add_section_plane,
+    operator.BIM_OT_delete_object,
     operator.BIM_OT_open_webbrowser,
     operator.BIM_OT_remove_section_plane,
+    operator.BIM_OT_select_object,
     operator.BIM_OT_show_description,
+    operator.ClippingPlaneCutWithCappings,
     operator.EditBlenderCollection,
     operator.FileAssociate,
     operator.FileUnassociate,
@@ -106,6 +110,7 @@ classes = [
     operator.OpenUri,
     operator.ReloadIfcFile,
     operator.RemoveIfcFile,
+    operator.RevertClippingPlaneCut,
     operator.SelectDataDir,
     operator.SelectIfcFile,
     operator.SelectSchemaDir,
@@ -128,6 +133,7 @@ classes = [
     prop.BIMMeshProperties,
     prop.BIMFacet,
     prop.BIMFilterGroup,
+    ui.BIM_UL_clipping_plane,
     ui.BIM_UL_generic,
     ui.BIM_UL_topics,
     ui.BIM_ADDON_preferences,
@@ -175,6 +181,7 @@ classes = [
     ui.BIM_PT_tab_sandbox,
     # TODO: move this somewhere else and clean it up
     ui.BIM_PT_section_plane,
+    ui.BIM_PT_section_with_cappings,
 ]
 
 for mod in modules.values():
@@ -184,7 +191,7 @@ addon_keymaps = []
 icons = None
 is_registering = False
 last_commit_hash = "8888888"
-overridden_scene_panels = dict()
+original_scene_panels_polls: dict[bpy.types.Panel, Union[Callable, None]] = dict()
 
 
 def on_register(scene):
@@ -292,10 +299,10 @@ def unregister():
             km.keymap_items.remove(kmi)
     addon_keymaps.clear()
 
-    for panel in tuple(overridden_scene_panels.keys()):
-        original_panel, override_panel = overridden_scene_panels[panel]
-        bpy.utils.unregister_class(override_panel)
-        bpy.utils.register_class(original_panel)
-        del overridden_scene_panels[panel]
+    import blenderbim.tool as tool
+
+    # use tuple() as method will be removing keys from dict
+    for panel in tuple(original_scene_panels_polls.keys()):
+        tool.Blender.remove_scene_panel_override(panel)
 
     bpy.app.translations.unregister("blenderbim")

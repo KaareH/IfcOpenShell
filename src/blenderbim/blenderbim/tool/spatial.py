@@ -20,6 +20,7 @@ import bpy
 import bmesh
 import shapely
 import ifcopenshell
+import ifcopenshell.util.element
 import blenderbim.core.type
 import blenderbim.core.tool
 import blenderbim.core.root
@@ -34,7 +35,7 @@ from shapely import Polygon, MultiPolygon
 
 class Spatial(blenderbim.core.tool.Spatial):
     @classmethod
-    def can_contain(cls, structure_obj, element_obj):
+    def can_contain(cls, structure_obj: bpy.types.Object, element_obj: bpy.types.Object) -> bool:
         structure = tool.Ifc.get_entity(structure_obj)
         element = tool.Ifc.get_entity(element_obj)
         if not structure or not element:
@@ -52,7 +53,7 @@ class Spatial(blenderbim.core.tool.Spatial):
         return True
 
     @classmethod
-    def can_reference(cls, structure, element):
+    def can_reference(cls, structure: ifcopenshell.entity_instance, element: ifcopenshell.entity_instance) -> bool:
         if not structure or not element:
             return False
         if tool.Ifc.get_schema() == "IFC2X3":
@@ -150,9 +151,9 @@ class Spatial(blenderbim.core.tool.Spatial):
         for product in products:
             obj = tool.Ifc.get_object(product)
             if obj and bpy.context.view_layer.objects.get(obj.name):
-                obj.select_set(True)
                 if unhide:
                     obj.hide_set(False)
+                obj.select_set(True)
 
     @classmethod
     def filter_products(cls, products, action):
@@ -582,14 +583,32 @@ class Spatial(blenderbim.core.tool.Spatial):
         obj.location = newLoc
 
     @classmethod
-    def set_obj_origin_to_cursor_position(cls, obj):
+    def set_obj_origin_to_bboxcenter_and_zero_elevation(cls, obj):
+        mat = obj.matrix_world
+        inverted = mat.inverted()
+        local_bbox_center = 0.125 * sum((Vector(b) for b in obj.bound_box), Vector())
+        global_bbox_center = mat @ local_bbox_center
+        global_obj_origin = global_bbox_center
+        global_obj_origin.z = 0
+
+        oldLoc = obj.location
+        newLoc = global_obj_origin
+        diff = newLoc - oldLoc
+        for vert in obj.data.vertices:
+            aux_vector = mat @ vert.co
+            aux_vector = aux_vector - diff
+            vert.co = inverted @ aux_vector
+        obj.location = newLoc
+
+    @classmethod
+    def set_obj_origin_to_cursor_position_and_zero_elevation(cls, obj):
         mat = obj.matrix_world
         inverted = mat.inverted()
 
         collection = bpy.context.view_layer.active_layer_collection.collection
         collection_obj = collection.BIMCollectionProperties.obj
         x, y = bpy.context.scene.cursor.location.xy
-        z = collection_obj.matrix_world.translation.z
+        z = 0
 
         oldLoc = obj.location
         newLoc = Vector((x, y, z))
@@ -689,7 +708,7 @@ class Spatial(blenderbim.core.tool.Spatial):
         instance_class = ifcopenshell.util.type.get_applicable_entities(ifc_class, tool.Ifc.get().schema)[0]
         bpy.ops.bim.assign_class(obj=obj.name, ifc_class=instance_class)
         element = tool.Ifc.get_entity(obj)
-        tool.Ifc.run("type.assign_type", related_object=element, relating_type=relating_type)
+        tool.Ifc.run("type.assign_type", related_objects=[element], relating_type=relating_type)
 
     @classmethod
     def assign_relating_type_to_element(cls, ifc, Type, element, relating_type):

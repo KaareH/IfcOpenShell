@@ -26,6 +26,7 @@ import ifcopenshell
 import ifcopenshell.util.unit
 import ifcopenshell.util.element
 import ifcopenshell.util.representation
+import ifcopenshell.util.placement
 import ifcopenshell.api
 import blenderbim.core.geometry as core
 import blenderbim.core.aggregate
@@ -37,6 +38,7 @@ import blenderbim.bim.handler
 from mathutils import Vector, Matrix
 from time import time
 from blenderbim.bim.ifc import IfcStore
+from ifcopenshell.util.shape_builder import ShapeBuilder
 
 
 class Operator:
@@ -322,8 +324,8 @@ class UpdateRepresentation(bpy.types.Operator, Operator):
                 # We are explicitly casting to a tessellation, so remove all parametric materials.
                 element_type = ifcopenshell.util.element.get_type(product)
                 if element_type:  # Some invalid IFCs use material sets without a type.
-                    ifcopenshell.api.run("material.unassign_material", tool.Ifc.get(), product=element_type)
-                ifcopenshell.api.run("material.unassign_material", tool.Ifc.get(), product=product)
+                    ifcopenshell.api.run("material.unassign_material", tool.Ifc.get(), products=[element_type])
+                ifcopenshell.api.run("material.unassign_material", tool.Ifc.get(), products=[product])
             else:
                 # These objects are parametrically based on an axis and should not be modified as a mesh
                 return
@@ -906,7 +908,7 @@ class OverrideDuplicateMove(bpy.types.Operator):
                     if parts:
                         index = DuplicateMoveLinkedAggregate.get_max_index(parts)
                         index += 1
-                        pset = tool.Ifc.get().by_id(pset['id'])
+                        pset = tool.Ifc.get().by_id(pset["id"])
                         ifcopenshell.api.run(
                             "pset.edit_pset",
                             tool.Ifc.get(),
@@ -938,6 +940,7 @@ class OverrideDuplicateMoveLinked(bpy.types.Operator):
 
 
 class DuplicateMoveLinkedAggregateMacro(bpy.types.Macro):
+    bl_description = "Create a new linked aggregate"
     bl_idname = "bim.object_duplicate_move_linked_aggregate_macro"
     bl_label = "IFC Duplicate Linked Aggregate"
     bl_options = {"REGISTER", "UNDO"}
@@ -974,26 +977,23 @@ class DuplicateMoveLinkedAggregate(bpy.types.Operator):
             if parts:
                 index = DuplicateMoveLinkedAggregate.get_max_index(parts)
                 add_linked_aggregate_pset(element, index)
-                index +=1
+                index += 1
                 for part in parts:
                     if part.is_a("IfcElementAssembly"):
                         select_objects_and_add_data(part)
                     else:
                         add_linked_aggregate_pset(part, index)
                         index += 1
-                        
+
                     obj = tool.Ifc.get_object(part)
                     obj.select_set(True)
-                    
-                    
+
         def add_linked_aggregate_pset(part, index):
             pset = ifcopenshell.util.element.get_pset(part, self.pset_name)
-        
+
             if not pset:
-                pset = ifcopenshell.api.run(
-                    "pset.add_pset", tool.Ifc.get(), product=part, name=self.pset_name
-                )
-            
+                pset = ifcopenshell.api.run("pset.add_pset", tool.Ifc.get(), product=part, name=self.pset_name)
+
                 ifcopenshell.api.run(
                     "pset.edit_pset",
                     tool.Ifc.get(),
@@ -1016,7 +1016,9 @@ class DuplicateMoveLinkedAggregate(bpy.types.Operator):
                 return
 
             linked_aggregate_group = ifcopenshell.api.run("group.add_group", tool.Ifc.get(), Name=self.group_name)
-            ifcopenshell.api.run("group.assign_group", tool.Ifc.get(), products=[element], group=linked_aggregate_group)
+            ifcopenshell.api.run(
+                "group.assign_group", tool.Ifc.get(), products=[element], group=linked_aggregate_group
+            )
 
         def custom_incremental_naming_for_element_assembly(old_to_new):
             for new in old_to_new.values():
@@ -1027,21 +1029,20 @@ class DuplicateMoveLinkedAggregate(bpy.types.Operator):
                         if r.is_a("IfcRelAssignsToGroup")
                         if "BBIM_Linked_Aggregate" in r.RelatingGroup.Name
                     ][0]
-                
+
                     number = len(group_elements) - 1
                     number = f"{number:02d}"
                     new_obj = tool.Ifc.get_object(new[0])
-                    pattern1 = r'_\d'
+                    pattern1 = r"_\d"
                     if re.findall(pattern1, new_obj.name):
                         split_name = new_obj.name.split("_")
                         new_obj.name = split_name[0] + "_" + number
                         continue
-                    pattern2 = r'\.\d{3}'
+                    pattern2 = r"\.\d{3}"
                     if re.findall(pattern2, new_obj.name):
                         split_name = new_obj.name.split(".")
                         new_obj.name = split_name[0] + "_" + number
 
-             
         if len(context.selected_objects) != 1:
             return {"FINISHED"}
 
@@ -1063,7 +1064,7 @@ class DuplicateMoveLinkedAggregate(bpy.types.Operator):
         old_to_new = OverrideDuplicateMove.execute_ifc_duplicate_operator(self, context, linked=True)
 
         custom_incremental_naming_for_element_assembly(old_to_new)
-        
+
         # Recreate aggregate relationship
         for old in old_to_new.keys():
             if old.is_a("IfcElementAssembly"):
@@ -1073,17 +1074,15 @@ class DuplicateMoveLinkedAggregate(bpy.types.Operator):
 
         return old_to_new
 
-    
     @staticmethod
     def get_max_index(parts):
         psets = [ifcopenshell.util.element.get_pset(p, "BBIM_Linked_Aggregate") for p in parts]
-        index = [i['Index'] for i in psets if i]
+        index = [i["Index"] for i in psets if i]
         if len(index) > 0:
             index = max(index)
             return index
         else:
             return 0
-        
 
 
 class RefreshLinkedAggregate(bpy.types.Operator):
@@ -1132,9 +1131,9 @@ class RefreshLinkedAggregate(bpy.types.Operator):
             original_names[group] = {}
 
             pset = ifcopenshell.util.element.get_pset(element, self.pset_name)
-            index = pset['Index']                    
+            index = pset["Index"]
             original_names[group][index] = tool.Ifc.get_object(element).name
-            
+
             parts = ifcopenshell.util.element.get_parts(element)
             if parts:
                 for part in parts:
@@ -1142,20 +1141,22 @@ class RefreshLinkedAggregate(bpy.types.Operator):
                         original_names | get_original_names(part)
                     else:
                         try:
-                          pset = ifcopenshell.util.element.get_pset(part, self.pset_name)
+                            pset = ifcopenshell.util.element.get_pset(part, self.pset_name)
                         except:
-                          continue
-                        index = pset['Index']                    
+                            continue
+                        index = pset["Index"]
                         original_names[group][index] = tool.Ifc.get_object(part).name
-                    
+
             return original_names
 
         def set_original_name(obj, original_names):
             element = tool.Ifc.get_entity(obj)
             aggregate = ifcopenshell.util.element.get_aggregate(element)
-            if ifcopenshell.util.element.get_parts(element): # if element has parts it means it is the base of and aggregate or sub-aggregate
+            if ifcopenshell.util.element.get_parts(
+                element
+            ):  # if element has parts it means it is the base of and aggregate or sub-aggregate
                 aggregate = element
-                
+
             group = [
                 r.RelatingGroup
                 for r in getattr(aggregate, "HasAssignments", []) or []
@@ -1164,18 +1165,16 @@ class RefreshLinkedAggregate(bpy.types.Operator):
             ]
             if not group:
                 return
-            
+
             group = group[0].id()
-                
+
             pset = ifcopenshell.util.element.get_pset(element, self.pset_name)
-            index = pset['Index']
-            
+            index = pset["Index"]
+
             try:
                 obj.name = original_names[group][index]
             except:
                 return
-            
-            
 
         def get_element_assembly(element):
             if element.is_a("IfcElementAssembly"):
@@ -1261,9 +1260,9 @@ class RefreshLinkedAggregate(bpy.types.Operator):
                 selected_matrix = selected_obj.matrix_world
                 object_duplicate = tool.Ifc.get_object(element)
                 duplicate_matrix = object_duplicate.matrix_world.decompose()
-                
+
                 original_names = get_original_names(element)
-                
+
                 delete_objects(element)
 
                 for obj in context.selected_objects:
@@ -1271,31 +1270,33 @@ class RefreshLinkedAggregate(bpy.types.Operator):
 
                 tool.Ifc.get_object(base_instance).select_set(True)
 
-                old_to_new = DuplicateMoveLinkedAggregate.execute_ifc_duplicate_linked_aggregate_operator(self, context)
+                old_to_new = DuplicateMoveLinkedAggregate.execute_ifc_duplicate_linked_aggregate_operator(
+                    self, context
+                )
                 for old, new in old_to_new.items():
                     new_obj = tool.Ifc.get_object(new[0])
                     new_base_matrix = Matrix.LocRotScale(*duplicate_matrix)
                     matrix_diff = Matrix.inverted(selected_matrix) @ new_obj.matrix_world
                     new_obj_matrix = new_base_matrix @ matrix_diff
                     new_obj.matrix_world = new_obj_matrix
-                    
+
                 for old, new in old_to_new.items():
                     if element_aggregate and new[0].is_a("IfcElementAssembly"):
                         new_aggregate = ifcopenshell.util.element.get_aggregate(new[0])
 
                         if not new_aggregate:
                             blenderbim.core.aggregate.assign_object(
-                                                        tool.Ifc,
-                                                        tool.Aggregate,
-                                                        tool.Collector,
-                                                        relating_obj=tool.Ifc.get_object(element_aggregate),
-                                                        related_obj=tool.Ifc.get_object(new[0]),
-                                                    )
-                
+                                tool.Ifc,
+                                tool.Aggregate,
+                                tool.Collector,
+                                relating_obj=tool.Ifc.get_object(element_aggregate),
+                                related_obj=tool.Ifc.get_object(new[0]),
+                            )
+
                 for old, new in old_to_new.items():
                     new_obj = tool.Ifc.get_object(new[0])
                     set_original_name(new_obj, original_names)
-                        
+
         blenderbim.bim.handler.refresh_ui_data()
 
         operator_time = time() - refresh_start_time
@@ -1328,18 +1329,23 @@ class OverrideJoin(bpy.types.Operator, Operator):
         return self.join_blender_obj()
 
     def join_ifc_obj(self):
-        representation = tool.Ifc.get().by_id(self.target.data.BIMMeshProperties.ifc_definition_id)
+        ifc_file = tool.Ifc.get()
+        builder = ShapeBuilder(ifc_file)
+        si_conversion = ifcopenshell.util.unit.calculate_unit_scale(ifc_file)
+        representation = ifc_file.by_id(self.target.data.BIMMeshProperties.ifc_definition_id)
         if representation.RepresentationType in ("Tessellation", "Brep"):
             for obj in bpy.context.selected_objects:
                 if obj == self.target:
                     continue
                 element = tool.Ifc.get_entity(obj)
                 if element:
-                    ifcopenshell.api.run("root.remove_product", tool.Ifc.get(), product=element)
+                    ifcopenshell.api.run("root.remove_product", ifc_file, product=element)
             bpy.ops.object.join()
             bpy.ops.bim.update_representation(obj=self.target.name, ifc_representation_class="")
         elif representation.RepresentationType == "SweptSolid":
             target_placement = np.array(self.target.matrix_world)
+            target_placement[:, 3][:3] /= si_conversion
+
             items = list(representation.Items)
             for obj in bpy.context.selected_objects:
                 if obj == self.target:
@@ -1352,31 +1358,28 @@ class OverrideJoin(bpy.types.Operator, Operator):
                     continue
 
                 # Only objects of the same representation type can be joined
-                obj_rep = tool.Ifc.get().by_id(obj.data.BIMMeshProperties.ifc_definition_id)
+                obj_rep = ifc_file.by_id(obj.data.BIMMeshProperties.ifc_definition_id)
                 if obj_rep.RepresentationType != "SweptSolid":
                     obj.select_set(False)
                     continue
 
                 placement = np.array(obj.matrix_world)
+                placement[:, 3][:3] /= si_conversion
 
                 for item in obj_rep.Items:
-                    copied_item = ifcopenshell.util.element.copy_deep(tool.Ifc.get(), item)
+                    copied_item = ifcopenshell.util.element.copy_deep(ifc_file, item)
                     for style in item.StyledByItem:
-                        copied_style = ifcopenshell.util.element.copy(tool.Ifc.get(), style)
+                        copied_style = ifcopenshell.util.element.copy(ifc_file, style)
                         copied_style.Item = copied_item
                     if copied_item.Position:
                         position = ifcopenshell.util.placement.get_axis2placement(copied_item.Position)
                     else:
-                        position = np.eye(4)
+                        position = np.eye(4, dtype=float)
                     position = placement @ position
                     position = np.linalg.inv(target_placement) @ position
-                    copied_item.Position = tool.Ifc.get().createIfcAxis2Placement3D(
-                        tool.Ifc.get().createIfcCartesianPoint([float(n) for n in position[:, 3][:3]]),
-                        tool.Ifc.get().createIfcDirection([float(n) for n in position[:, 2][:3]]),
-                        tool.Ifc.get().createIfcDirection([float(n) for n in position[:, 0][:3]]),
-                    )
+                    copied_item.Position = builder.create_axis2_placement_3d_from_matrix(position)
                     items.append(copied_item)
-                ifcopenshell.api.run("root.remove_product", tool.Ifc.get(), product=element)
+                ifcopenshell.api.run("root.remove_product", ifc_file, product=element)
             representation.Items = items
             bpy.ops.object.join()
             core.switch_representation(
@@ -1441,7 +1444,9 @@ class OverrideModeSetEdit(bpy.types.Operator):
         for obj in selected_objs:
             if not obj:
                 continue
-            if not obj.data:
+            obj_supports_edit_mode, message = tool.Blender.object_supports_edit_mode(obj)
+            if not obj_supports_edit_mode:
+                self.report({"INFO"}, message)
                 obj.select_set(False)
                 continue
             element = tool.Ifc.get_entity(obj)

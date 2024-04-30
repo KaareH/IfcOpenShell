@@ -21,10 +21,14 @@ import bpy
 import time
 import logging
 import tempfile
+import subprocess
+import numpy as np
 import ifcopenshell
 import ifcopenshell.api
 import ifcopenshell.util.selector
+import ifcopenshell.util.geolocation
 import ifcopenshell.util.representation
+import ifcopenshell.util.element
 import blenderbim.bim.handler
 import blenderbim.bim.schema
 import blenderbim.tool as tool
@@ -35,8 +39,14 @@ from blenderbim.bim.ifc import IfcStore
 from blenderbim.bim.ui import IFCFileSelector
 from blenderbim.bim import import_ifc
 from blenderbim.bim import export_ifc
+from collections import defaultdict
+import json
+from math import radians
 from pathlib import Path
+from mathutils import Vector, Matrix
 from bpy.app.handlers import persistent
+from blenderbim.bim.module.project.data import LinksData
+from blenderbim.bim.module.project.decorator import ProjectDecorator, ClippingPlaneDecorator
 
 
 class NewProject(bpy.types.Operator):
@@ -76,7 +86,7 @@ class NewProject(bpy.types.Operator):
             bpy.context.scene.unit_settings.length_unit = "MILLIMETERS"
             bpy.context.scene.BIMProperties.area_unit = "SQUARE_METRE"
             bpy.context.scene.BIMProperties.volume_unit = "CUBIC_METRE"
-            bpy.context.scene.BIMProjectProperties.template_file = "IFC4 Demo Library.ifc"
+            bpy.context.scene.BIMProjectProperties.template_file = "IFC4 Demo Template.ifc"
 
         if self.preset != "wizard":
             bpy.ops.bim.create_project()
@@ -105,6 +115,10 @@ class CreateProject(bpy.types.Operator):
         if tool.Blender.is_default_scene():
             for obj in bpy.data.objects:
                 bpy.data.objects.remove(obj)
+            for mesh in bpy.data.meshes:
+                bpy.data.meshes.remove(mesh)
+            for mat in bpy.data.materials:
+                bpy.data.materials.remove(mat)
         core.create_project(tool.Ifc, tool.Project, schema=props.export_schema, template=template)
         tool.Blender.register_toolbar()
 
@@ -178,7 +192,9 @@ class RefreshLibrary(bpy.types.Operator):
         self.props.active_library_element = ""
 
         types = IfcStore.library_file.wrapped_data.types_with_super()
-        for importable_type in sorted(["IfcTypeProduct", "IfcMaterial", "IfcCostSchedule", "IfcProfileDef"]):
+
+        element_classes = ["IfcTypeProduct", "IfcMaterial", "IfcCostSchedule", "IfcProfileDef"]
+        for importable_type in sorted(element_classes):
             if importable_type in types:
                 new = self.props.library_elements.add()
                 new.name = importable_type
@@ -197,11 +213,15 @@ class ChangeLibraryElement(bpy.types.Operator):
         self.library_file = IfcStore.library_file
         ifc_classes = set()
         self.props.active_library_element = self.element_name
+
         crumb = self.props.library_breadcrumb.add()
         crumb.name = self.element_name
+
         elements = self.library_file.by_type(self.element_name)
         [ifc_classes.add(e.is_a()) for e in elements]
+
         self.props.library_elements.clear()
+
         if len(ifc_classes) == 1 and list(ifc_classes)[0] == self.element_name:
             for name, ifc_definition_id in sorted([(self.get_name(e), e.id()) for e in elements]):
                 self.add_library_asset(name, ifc_definition_id)
@@ -422,7 +442,13 @@ class AppendLibraryElement(bpy.types.Operator):
         if element.is_a("IfcTypeProduct"):
             self.import_type_from_ifc(element, context)
         elif element.is_a("IfcProduct"):
+            # NOTE: not used as UI doesn't allow appending non-types
             self.import_product_from_ifc(element, context)
+            element_type = ifcopenshell.util.element.get_type(element)
+            obj = tool.Ifc.get_object(element_type)
+            if obj is None:
+                self.import_type_from_ifc(element_type, context)
+
         elif element.is_a("IfcMaterial"):
             self.import_material_from_ifc(element, context)
         try:
@@ -433,7 +459,7 @@ class AppendLibraryElement(bpy.types.Operator):
         blenderbim.bim.handler.refresh_ui_data()
         return {"FINISHED"}
 
-    def import_material_from_ifc(self, element, context):
+    def import_material_from_ifc(self, element: ifcopenshell.entity_instance, context: bpy.types.Context) -> None:
         self.file = IfcStore.get_file()
         logger = logging.getLogger("ImportIFC")
         ifc_import_settings = import_ifc.IfcImportSettings.factory(context, IfcStore.path, logger)
@@ -442,7 +468,7 @@ class AppendLibraryElement(bpy.types.Operator):
         blender_material = ifc_importer.create_material(element)
         self.import_material_styles(blender_material, element, ifc_importer)
 
-    def import_product_from_ifc(self, element, context):
+    def import_product_from_ifc(self, element: ifcopenshell.entity_instance, context: bpy.types.Context) -> None:
         self.file = IfcStore.get_file()
         logger = logging.getLogger("ImportIFC")
         ifc_import_settings = import_ifc.IfcImportSettings.factory(context, IfcStore.path, logger)
@@ -455,7 +481,7 @@ class AppendLibraryElement(bpy.types.Operator):
         ifc_importer.create_generic_elements({element})
         ifc_importer.place_objects_in_collections()
 
-    def import_type_from_ifc(self, element, context):
+    def import_type_from_ifc(self, element: ifcopenshell.entity_instance, context: bpy.types.Context) -> None:
         self.file = IfcStore.get_file()
         logger = logging.getLogger("ImportIFC")
         ifc_import_settings = import_ifc.IfcImportSettings.factory(context, IfcStore.path, logger)
@@ -480,14 +506,14 @@ class AppendLibraryElement(bpy.types.Operator):
         ifc_importer.create_element_type(element)
         ifc_importer.place_objects_in_collections()
 
-    def import_materials(self, element, ifc_importer):
+    def import_materials(self, element: ifcopenshell.entity_instance, ifc_importer: import_ifc.IfcImporter) -> None:
         for material in ifcopenshell.util.element.get_materials(element):
             if IfcStore.get_element(material.id()):
                 continue
             blender_material = ifc_importer.create_material(material)
             self.import_material_styles(blender_material, material, ifc_importer)
 
-    def import_styles(self, element, ifc_importer):
+    def import_styles(self, element: ifcopenshell.entity_instance, ifc_importer: import_ifc.IfcImporter) -> None:
         if element.is_a("IfcTypeProduct"):
             representations = element.RepresentationMaps or []
         elif element.is_a("IfcProduct"):
@@ -500,7 +526,12 @@ class AppendLibraryElement(bpy.types.Operator):
                     if element2.is_a("IfcSurfaceStyle") and not IfcStore.get_element(element2.id()):
                         ifc_importer.create_style(element2)
 
-    def import_material_styles(self, blender_material, material, ifc_importer):
+    def import_material_styles(
+        self,
+        blender_material: bpy.types.Material,
+        material: ifcopenshell.entity_instance,
+        ifc_importer: import_ifc.IfcImporter,
+    ) -> None:
         if not material.HasRepresentation:
             return
         for element in self.file.traverse(material.HasRepresentation[0]):
@@ -811,27 +842,33 @@ class ToggleFilterCategories(bpy.types.Operator):
 
 class LinkIfc(bpy.types.Operator):
     bl_idname = "bim.link_ifc"
-    bl_label = "Link Blend/IFC File"
+    bl_label = "Link IFC"
     bl_options = {"REGISTER", "UNDO"}
-    bl_description = "This will link the Blender file that is synced with the IFC file"
+    bl_description = "Reference in a read-only IFC model in the background"
     filepath: bpy.props.StringProperty(subtype="FILE_PATH")
     files: bpy.props.CollectionProperty(name="Files", type=bpy.types.OperatorFileListElement)
     directory: bpy.props.StringProperty(subtype="DIR_PATH")
-    filter_glob: bpy.props.StringProperty(default="*.blend;*.blend1", options={"HIDDEN"})
+    filter_glob: bpy.props.StringProperty(default="*.ifc", options={"HIDDEN"})
     use_relative_path: bpy.props.BoolProperty(name="Use Relative Path", default=False)
+    false_origin: bpy.props.StringProperty(name="False Origin", default="0,0,0")
 
     def execute(self, context):
-        files = [f.name for f in self.files] if self.files else [self.filepath]
+        start = time.time()
+        files = [f.name.replace("\\", "/") for f in self.files] if self.files else [self.filepath.replace("\\", "/")]
         for filename in files:
-            filepath = os.path.join(self.directory, filename)
+            filepath = os.path.join(self.directory, filename).replace("\\", "/")
             if bpy.data.filepath and Path(filepath).samefile(bpy.data.filepath):
                 self.report({"INFO"}, "Can't link the current .blend file")
                 continue
             new = context.scene.BIMProjectProperties.links.add()
             if self.use_relative_path:
-                filepath = os.path.relpath(filepath, bpy.path.abspath("//"))
+                try:
+                    filepath = os.path.relpath(filepath, bpy.path.abspath("//")).replace("\\", "/")
+                except:
+                    pass  # Perhaps on another drive or something
             new.name = filepath
-            bpy.ops.bim.load_link(filepath=filepath)
+            bpy.ops.bim.load_link(filepath=filepath, false_origin=self.false_origin)
+        print(f"Finished linking {len(files)} IFCs", time.time() - start)
         return {"FINISHED"}
 
     def invoke(self, context, event):
@@ -847,6 +884,7 @@ class UnlinkIfc(bpy.types.Operator):
     filepath: bpy.props.StringProperty()
 
     def execute(self, context):
+        self.filepath = self.filepath.replace("\\", "/")
         bpy.ops.bim.unload_link(filepath=self.filepath)
         index = context.scene.BIMProjectProperties.links.find(self.filepath)
         if index != -1:
@@ -862,17 +900,33 @@ class UnloadLink(bpy.types.Operator):
     filepath: bpy.props.StringProperty()
 
     def execute(self, context):
+        self.filepath = self.filepath.replace("\\", "/")
         filepath = self.filepath
         if not os.path.isabs(filepath):
             filepath = os.path.abspath(os.path.join(bpy.path.abspath("//"), filepath))
-        for collection in context.scene.collection.children:
-            if collection.library and collection.library.filepath == filepath:
-                context.scene.collection.children.unlink(collection)
-        for scene in bpy.data.scenes:
-            if scene.library and scene.library.filepath == filepath:
+        filepath = Path(filepath)
+        if filepath.suffix.lower() == ".ifc":
+            filepath = filepath.with_suffix(".ifc.cache.blend")
+
+        for collection in context.scene.collection.children[:]:
+            if collection.library and Path(collection.library.filepath) == filepath:
+                bpy.data.collections.remove(collection)
+
+        for scene in bpy.data.scenes[:]:
+            if scene.library and Path(scene.library.filepath) == filepath:
                 bpy.data.scenes.remove(scene)
-        link = context.scene.BIMProjectProperties.links.get(self.filepath)
-        link.is_loaded = False
+
+        links = context.scene.BIMProjectProperties.links
+        links.get(self.filepath).is_loaded = False
+
+        if not any([l.is_loaded for l in links]):
+            ProjectDecorator.uninstall()
+        # we make sure we don't draw queried object from the file that was just unlinked
+        elif queried_obj := context.scene.BIMProjectProperties.queried_obj:
+            queried_filepath = Path(queried_obj["ifc_filepath"])
+            if queried_filepath == filepath:
+                ProjectDecorator.uninstall()
+
         return {"FINISHED"}
 
 
@@ -882,23 +936,59 @@ class LoadLink(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
     bl_description = "Load the selected file"
     filepath: bpy.props.StringProperty()
+    false_origin: bpy.props.StringProperty(name="False Origin", default="0,0,0")
 
     def execute(self, context):
+        self.filepath = self.filepath.replace("\\", "/")
         filepath = self.filepath
         if not os.path.isabs(filepath):
-            filepath = os.path.abspath(os.path.join(bpy.path.abspath("//"), filepath))
+            filepath = os.path.abspath(os.path.join(bpy.path.abspath("//"), filepath)).replace("\\", "/")
+        if self.filepath.lower().endswith(".blend"):
+            self.link_blend(filepath)
+        elif self.filepath.lower().endswith(".ifc"):
+            self.link_ifc()
+        return {"FINISHED"}
+
+    def link_blend(self, filepath):
         with bpy.data.libraries.load(filepath, link=True) as (data_from, data_to):
             data_to.scenes = data_from.scenes
         for scene in bpy.data.scenes:
-            if not scene.library or scene.library.filepath != filepath:
+            if not scene.library or scene.library.filepath.replace("\\", "/") != filepath:
                 continue
             for child in scene.collection.children:
                 if "IfcProject" not in child.name:
                     continue
                 bpy.data.scenes[0].collection.children.link(child)
-        link = context.scene.BIMProjectProperties.links.get(self.filepath)
+        link = bpy.context.scene.BIMProjectProperties.links.get(self.filepath)
         link.is_loaded = True
-        return {"FINISHED"}
+
+    def link_ifc(self):
+        blend_filepath = self.filepath + ".cache.blend"
+        h5_filepath = self.filepath + ".cache.h5"
+
+        if not os.path.exists(blend_filepath):
+            code = f"""
+import bpy
+
+def run():
+    bpy.ops.bim.load_linked_project(filepath="{self.filepath}", false_origin="{self.false_origin}")
+    bpy.ops.wm.save_as_mainfile(filepath="{blend_filepath}")
+
+try:
+    run()
+except Exception as e:
+    import traceback
+    traceback.print_exc()
+    exit(1)
+            """
+
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as temp_file:
+                temp_file.write(code)
+            run = subprocess.run([bpy.app.binary_path, "-b", "--python", temp_file.name, "--python-exit-code", "1"])
+            if run.returncode == 1:
+                print("An error occurred while processing your IFC.")
+
+        self.link_blend(blend_filepath)
 
 
 class ReloadLink(bpy.types.Operator):
@@ -910,7 +1000,7 @@ class ReloadLink(bpy.types.Operator):
 
     def execute(self, context):
         def get_linked_ifcs():
-            selected_filename = os.path.basename(self.filepath)
+            selected_filename = os.path.basename(self.filepath.replace("\\", "/"))
             return [
                 c.library
                 for c in bpy.data.collections
@@ -927,24 +1017,24 @@ class ToggleLinkSelectability(bpy.types.Operator):
     bl_label = "Toggle Link Selectability"
     bl_options = {"REGISTER", "UNDO"}
     bl_description = "Toggle selectability"
-    link: bpy.props.StringProperty()
+    link: bpy.props.StringProperty(name="Linked IFC Filepath")
 
     def execute(self, context):
         props = context.scene.BIMProjectProperties
         link = props.links.get(self.link)
-        self.filepath = self.link
-        if not os.path.isabs(self.filepath):
-            self.filepath = os.path.abspath(os.path.join(bpy.path.abspath("//"), self.filepath))
+        if not os.path.isabs(self.link):
+            self.link = os.path.abspath(os.path.join(bpy.path.abspath("//"), self.link))
+        self.library_filepath = Path(self.link).with_suffix(".ifc.cache.blend")
         for collection in self.get_linked_collections():
             collection.hide_select = not collection.hide_select
             link.is_selectable = not collection.hide_select
         return {"FINISHED"}
 
-    def get_linked_collections(self):
+    def get_linked_collections(self) -> list[bpy.types.Collection]:
         return [
             c
             for c in bpy.data.collections
-            if "IfcProject" in c.name and c.library and c.library.filepath == self.filepath
+            if "IfcProject" in c.name and c.library and Path(c.library.filepath) == self.library_filepath
         ]
 
 
@@ -953,15 +1043,15 @@ class ToggleLinkVisibility(bpy.types.Operator):
     bl_label = "Toggle Link Visibility"
     bl_options = {"REGISTER", "UNDO"}
     bl_description = "Toggle visibility between SOLID and WIREFRAME"
-    link: bpy.props.StringProperty()
-    mode: bpy.props.StringProperty()
+    link: bpy.props.StringProperty(name="Linked IFC Filepath")
+    mode: bpy.props.EnumProperty(name="Visibility Mode", items=((i, i, "") for i in ("WIREFRAME", "VISIBLE")))
 
     def execute(self, context):
         props = context.scene.BIMProjectProperties
         link = props.links.get(self.link)
-        self.filepath = self.link
-        if not os.path.isabs(self.filepath):
-            self.filepath = os.path.abspath(os.path.join(bpy.path.abspath("//"), self.filepath))
+        if not os.path.isabs(self.link):
+            self.link = os.path.abspath(os.path.join(bpy.path.abspath("//"), self.link))
+        self.library_filepath = Path(self.link).with_suffix(".ifc.cache.blend")
         if self.mode == "WIREFRAME":
             self.toggle_wireframe(link)
         elif self.mode == "VISIBLE":
@@ -982,25 +1072,17 @@ class ToggleLinkVisibility(bpy.types.Operator):
 
     def toggle_visibility(self, link):
         linked_collections = self.get_linked_collections()
-        queue = [bpy.context.view_layer.layer_collection]
-        layer_collection = None
 
-        while queue:
-            layer = queue.pop()
-            if layer.collection in linked_collections:
-                layer_collection = layer
-                break
-            queue.extend(list(layer.children))
-
-        if layer_collection:
+        layer_collections = tool.Blender.get_layer_collections_mapping(linked_collections)
+        for layer_collection in layer_collections.values():
             layer_collection.exclude = not layer_collection.exclude
             link.is_hidden = layer_collection.exclude
 
-    def get_linked_collections(self):
+    def get_linked_collections(self) -> list[bpy.types.Collection]:
         return [
             c
             for c in bpy.data.collections
-            if "IfcProject" in c.name and c.library and c.library.filepath == self.filepath
+            if "IfcProject" in c.name and c.library and Path(c.library.filepath) == self.library_filepath
         ]
 
 
@@ -1129,4 +1211,851 @@ class ImportIFC(bpy.types.Operator):
 
     def execute(self, context):
         bpy.ops.bim.load_project("INVOKE_DEFAULT")
+        return {"FINISHED"}
+
+
+class LoadLinkedProject(bpy.types.Operator):
+    bl_idname = "bim.load_linked_project"
+    bl_label = "Load a project for viewing only."
+    bl_options = {"REGISTER", "UNDO"}
+    filepath: bpy.props.StringProperty()
+    false_origin: bpy.props.StringProperty(name="False Origin", default="0,0,0")
+
+    def execute(self, context):
+        import ifcpatch
+        import multiprocessing
+        import ifcopenshell.geom
+
+        start = time.time()
+
+        self.filepath = self.filepath.replace("\\", "/")
+        print("Processing", self.filepath)
+
+        self.collection = bpy.data.collections.new("IfcProject/" + os.path.basename(self.filepath))
+        self.file = ifcopenshell.open(self.filepath)
+        print("Finished opening")
+
+        self.db_filepath = self.filepath + ".cache.sqlite"
+        db = ifcpatch.execute(
+            {"input": self.filepath, "file": self.file, "recipe": "ExtractPropertiesToSQLite", "arguments": []}
+        )
+        ifcpatch.write(db, self.db_filepath)
+        print("Finished writing property database")
+
+        logger = logging.getLogger("ImportIFC")
+        ifc_import_settings = import_ifc.IfcImportSettings.factory(context, IfcStore.path, logger)
+        ifc_importer = import_ifc.IfcImporter(ifc_import_settings)
+        ifc_importer.file = self.file
+        ifc_importer.process_context_filter()
+
+        self.elements = set(self.file.by_type("IfcElement"))
+        if self.file.schema in ("IFC2X3", "IFC4"):
+            self.elements |= set(self.file.by_type("IfcProxy"))
+        self.elements |= set(self.file.by_type("IfcSite"))
+        self.elements -= set(self.file.by_type("IfcFeatureElement"))
+        self.elements = list(self.elements)
+
+        model_origin = np.array(ifcopenshell.util.geolocation.auto_xyz2enh(self.file, 0, 0, 0))
+        false_origin = np.array([float(o.strip()) for o in self.false_origin.split(",")])
+        model_offset = model_origin - false_origin
+        zero_origin = np.array((0, 0, 0))
+        has_model_offset = not np.allclose(model_offset, zero_origin)
+
+        for settings in ifc_importer.context_settings:
+            settings = ifcopenshell.geom.settings()
+
+            if has_model_offset:
+                offset = ifcopenshell.ifcopenshell_wrapper.float_array_3()
+                offset[0], offset[1], offset[2] = model_offset
+                settings.offset = offset
+
+            iterator = ifcopenshell.geom.iterator(
+                settings, self.file, multiprocessing.cpu_count(), include=self.elements
+            )
+            self.meshes = {}
+            self.blender_mats = {}
+            blender_mats = {}
+
+            default_mat = np.array([[1, 1, 1, 1]], dtype=np.float32)
+            chunked_guids = []
+            chunked_guid_ids = []
+            chunked_verts = []
+            chunked_faces = []
+            chunked_materials = []
+            chunked_material_ids = []
+            material_offset = 0
+            max_slot_index = 0
+            chunk_size = 10000
+            r4 = np.array([[0, 0, 0, 1]])
+            offset = 0
+
+            ci = 0
+            if iterator.initialize():
+                while True:
+                    shape = iterator.get()
+                    if len(shape.geometry.faces) > 1000 and self.is_local(shape):  # 333 tris
+                        self.process_occurrence(shape)
+                        if not iterator.next():
+                            if not chunked_verts:
+                                break
+                            mats = np.concatenate(chunked_materials)
+                            midx = np.concatenate(chunked_material_ids)
+                            mats, mapping = np.unique(mats, axis=0, return_inverse=True)
+                            midx = mapping[midx]
+
+                            mat_results = []
+                            for mat in mats:
+                                mat = tuple(mat)
+                                blender_mat = blender_mats.get(mat, None)
+                                if not blender_mat:
+                                    blender_mat = bpy.data.materials.new("Chunk")
+                                    blender_mat.diffuse_color = mat
+                                    blender_mats[mat] = blender_mat
+                                mat_results.append(blender_mat)
+
+                            # The left over chunk
+                            self.create_object(
+                                np.concatenate(chunked_verts),
+                                np.concatenate(chunked_faces),
+                                mat_results,
+                                midx,
+                                chunked_guids,
+                                chunked_guid_ids,
+                            )
+                            break
+                        continue
+
+                    ci += 1
+                    if ci % 50 == 0:
+                        print("Doing chunk", ci)
+
+                    has_processed_chunk = False
+
+                    ms = np.vstack([default_mat, np.frombuffer(shape.geometry.colors_buffer).reshape((-1, 4))])
+                    mi = np.frombuffer(shape.geometry.material_ids_buffer, dtype=np.int32)
+                    for geom_material_idx, geom_material in enumerate(shape.geometry.materials):
+                        if not geom_material.has_diffuse:
+                            ms[geom_material_idx + 1] = (0.8, 0.8, 0.8, 1)
+                    chunked_materials.append(ms)
+                    chunked_material_ids.append(mi + material_offset + 1)
+                    material_offset += len(ms)
+
+                    M4 = np.frombuffer(shape.transformation_buffer).reshape((4, 3))
+                    M4 = np.concatenate((M4.T, r4))
+                    vs = np.frombuffer(shape.geometry.verts_buffer).reshape((-1, 3))
+                    vs = np.hstack((vs, np.ones((len(vs), 1))))
+                    vs = (np.asmatrix(M4) * np.asmatrix(vs).T).T.A
+                    vs = vs[:, :3].flatten()
+                    fs = np.frombuffer(shape.geometry.faces_buffer, dtype=np.int32)
+                    chunked_verts.append(vs)
+                    chunked_faces.append(fs + offset)
+                    offset += len(vs) // 3
+
+                    chunked_guids.append(shape.guid)
+                    if chunked_guid_ids:
+                        chunked_guid_ids.append((len(fs) // 3) + chunked_guid_ids[-1])
+                    else:
+                        chunked_guid_ids.append(len(fs) // 3)
+
+                    if offset > chunk_size:
+                        has_processed_chunk = True
+
+                        mats = np.concatenate(chunked_materials)
+                        midx = np.concatenate(chunked_material_ids)
+                        mats, mapping = np.unique(mats, axis=0, return_inverse=True)
+                        midx = mapping[midx]
+
+                        mat_results = []
+                        for mat in mats:
+                            mat = tuple(mat)
+                            blender_mat = blender_mats.get(mat, None)
+                            if not blender_mat:
+                                blender_mat = bpy.data.materials.new("Chunk")
+                                blender_mat.diffuse_color = mat
+                                blender_mats[mat] = blender_mat
+                            mat_results.append(blender_mat)
+
+                        self.create_object(
+                            np.concatenate(chunked_verts),
+                            np.concatenate(chunked_faces),
+                            mat_results,
+                            midx,
+                            chunked_guids,
+                            chunked_guid_ids,
+                        )
+                        chunked_guids = []
+                        chunked_guid_ids = []
+                        chunked_verts = []
+                        chunked_faces = []
+                        chunked_materials = []
+                        chunked_material_ids = []
+                        material_offset = 0
+                        max_slot_index = 0
+                        offset = 0
+
+                    if not iterator.next():
+                        if not has_processed_chunk:
+                            mats = np.concatenate(chunked_materials)
+                            midx = np.concatenate(chunked_material_ids)
+                            mats, mapping = np.unique(mats, axis=0, return_inverse=True)
+                            midx = mapping[midx]
+
+                            mat_results = []
+                            for mat in mats:
+                                mat = tuple(mat)
+                                blender_mat = blender_mats.get(mat, None)
+                                if not blender_mat:
+                                    blender_mat = bpy.data.materials.new("Chunk")
+                                    blender_mat.diffuse_color = mat
+                                    blender_mats[mat] = blender_mat
+                                mat_results.append(blender_mat)
+
+                            # The left over chunk
+                            self.create_object(
+                                np.concatenate(chunked_verts),
+                                np.concatenate(chunked_faces),
+                                mat_results,
+                                midx,
+                                chunked_guids,
+                                chunked_guid_ids,
+                            )
+                        break
+
+            bpy.context.scene.collection.children.link(self.collection)
+            print("Finished", time.time() - start)
+            break
+        return {"FINISHED"}
+
+    def is_local(self, shape):
+        m = shape.transformation.matrix.data
+        if max([abs(co) for co in (m[9], m[10], m[11])]) > 1000:
+            return False
+        elif max([abs(co) for co in shape.geometry.verts[0:3]]) > 1000:
+            return False
+        return True
+
+    def process_occurrence(self, shape):
+        element = self.file.by_id(shape.id)
+        matrix = shape.transformation.matrix.data
+        faces = shape.geometry.faces
+        verts = shape.geometry.verts
+        materials = shape.geometry.materials
+        material_ids = shape.geometry.material_ids
+
+        m = shape.transformation.matrix.data
+        mat = np.array(([m[0], m[3], m[6], m[9]], [m[1], m[4], m[7], m[10]], [m[2], m[5], m[8], m[11]], [0, 0, 0, 1]))
+
+        mesh = self.meshes.get(shape.geometry.id, None)
+        if not mesh:
+            mesh = bpy.data.meshes.new("Mesh")
+
+            material_to_slot = {}
+            max_slot_index = 0
+
+            for i, material in enumerate(materials):
+                alpha = 1.0
+                if material.has_transparency and material.transparency > 0:
+                    alpha = 1.0 - material.transparency
+                if material.has_diffuse:
+                    diffuse = material.diffuse + (alpha,)
+                else:
+                    diffuse = (0.8, 0.8, 0.8, 1)  # Blender's default material
+                material_name = f"{diffuse[0]}-{diffuse[1]}-{diffuse[2]}-{diffuse[3]}"
+                blender_mat = self.blender_mats.get(material_name, None)
+                if not blender_mat:
+                    blender_mat = bpy.data.materials.new(material_name)
+                    blender_mat.diffuse_color = diffuse
+                    self.blender_mats[material_name] = blender_mat
+                slot_index = mesh.materials.find(material.name)
+                if slot_index == -1:
+                    mesh.materials.append(blender_mat)
+                    slot_index = max_slot_index
+                    max_slot_index += 1
+                material_to_slot[i] = slot_index
+
+            material_index = [(material_to_slot[i] if i != -1 else 0) for i in material_ids]
+
+            num_vertices = len(verts) // 3
+            total_faces = len(faces)
+            loop_start = range(0, total_faces, 3)
+            num_loops = total_faces // 3
+            loop_total = [3] * num_loops
+            num_vertex_indices = len(faces)
+
+            mesh.vertices.add(num_vertices)
+            mesh.vertices.foreach_set("co", verts)
+            mesh.loops.add(num_vertex_indices)
+            mesh.loops.foreach_set("vertex_index", faces)
+            mesh.polygons.add(num_loops)
+            mesh.polygons.foreach_set("loop_start", loop_start)
+            mesh.polygons.foreach_set("loop_total", loop_total)
+            mesh.polygons.foreach_set("use_smooth", [0] * total_faces)
+            mesh.polygons.foreach_set("material_index", material_index)
+            mesh.update()
+
+            self.meshes[shape.geometry.id] = mesh
+
+        obj = bpy.data.objects.new(tool.Loader.get_name(element), mesh)
+        obj.matrix_world = Matrix(mat.tolist())
+
+        obj["guids"] = [shape.guid]
+        obj["guid_ids"] = [len(mesh.polygons)]
+        obj["db"] = self.db_filepath
+
+        self.collection.objects.link(obj)
+
+    def create_object(self, verts, faces, materials, material_ids, guids, guid_ids):
+        num_vertices = len(verts) // 3
+        if not num_vertices:
+            return
+        total_faces = len(faces)
+        loop_start = range(0, total_faces, 3)
+        num_loops = total_faces // 3
+        loop_total = [3] * num_loops
+        num_vertex_indices = len(faces)
+
+        mesh = bpy.data.meshes.new("Mesh")
+
+        for material in materials:
+            mesh.materials.append(material)
+
+        mesh.vertices.add(num_vertices)
+        mesh.vertices.foreach_set("co", verts)
+        mesh.loops.add(num_vertex_indices)
+        mesh.loops.foreach_set("vertex_index", faces)
+        mesh.polygons.add(num_loops)
+        mesh.polygons.foreach_set("loop_start", loop_start)
+        mesh.polygons.foreach_set("loop_total", loop_total)
+        mesh.polygons.foreach_set("use_smooth", [0] * total_faces)
+
+        if material_ids.size > 0:
+            mesh.polygons.foreach_set("material_index", material_ids)
+
+        mesh.update()
+
+        obj = bpy.data.objects.new("Chunk", mesh)
+        obj["guids"] = list(guids)
+        obj["guid_ids"] = list(guid_ids)
+        obj["db"] = self.db_filepath
+        obj["ifc_filepath"] = self.filepath
+
+        self.collection.objects.link(obj)
+
+
+class QueryLinkedElement(bpy.types.Operator):
+    bl_idname = "bim.query_linked_element"
+    bl_label = "Query Linked Element"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.area.type == "VIEW_3D"
+
+    def execute(self, context):
+        import sqlite3
+        from bpy_extras.view3d_utils import region_2d_to_vector_3d, region_2d_to_origin_3d
+
+        LinksData.linked_data = {}
+        bpy.context.scene.BIMProjectProperties.queried_obj = None
+
+        for area in bpy.context.screen.areas:
+            if area.type == "PROPERTIES":
+                for region in area.regions:
+                    if region.type == "WINDOW":
+                        region.tag_redraw()
+            elif area.type == "VIEW_3D":
+                area.tag_redraw()
+
+        region = context.region
+        rv3d = context.region_data
+        coord = (self.mouse_x, self.mouse_y)
+        origin = region_2d_to_origin_3d(region, rv3d, coord)
+        direction = region_2d_to_vector_3d(region, rv3d, coord)
+        hit, location, normal, face_index, obj, matrix = self.ray_cast(context, origin, direction)
+        if not hit:
+            self.report({"INFO"}, "No object found.")
+            return {"FINISHED"}
+
+        if "guids" not in obj:
+            self.report({"INFO"}, "Object is not a linked IFC element.")
+            return {"FINISHED"}
+
+        guid = None
+        guid_start_index = 0
+        for i, guid_end_index in enumerate(obj["guid_ids"]):
+            if face_index < guid_end_index:
+                guid = obj["guids"][i]
+                bpy.context.scene.BIMProjectProperties.queried_obj = obj
+
+                selected_tris = []
+                selected_edges = []
+                vert_indices = set()
+                for polygon in obj.data.polygons[guid_start_index:guid_end_index]:
+                    vert_indices.update(polygon.vertices)
+                vert_indices = list(vert_indices)
+                vert_map = {k: v for v, k in enumerate(vert_indices)}
+                selected_vertices = [tuple(obj.matrix_world @ obj.data.vertices[vi].co) for vi in vert_indices]
+                for polygon in obj.data.polygons[guid_start_index:guid_end_index]:
+                    selected_tris.append(tuple(vert_map[v] for v in polygon.vertices))
+                    selected_edges.extend(tuple([vert_map[vi] for vi in e] for e in polygon.edge_keys))
+
+                obj["selected_vertices"] = selected_vertices
+                obj["selected_edges"] = selected_edges
+                obj["selected_tris"] = selected_tris
+
+                break
+            guid_start_index = guid_end_index
+
+        self.db = sqlite3.connect(obj["db"])
+        self.c = self.db.cursor()
+
+        self.c.execute(f"SELECT * FROM elements WHERE global_id = '{guid}' LIMIT 1")
+        element = self.c.fetchone()
+
+        attributes = {}
+        for i, attr in enumerate(["GlobalId", "IFC Class", "Predefined Type", "Name", "Description"]):
+            if element[i + 1] is not None:
+                attributes[attr] = element[i + 1]
+
+        self.c.execute("SELECT * FROM properties WHERE element_id = ?", (element[0],))
+        rows = self.c.fetchall()
+
+        properties = {}
+        for row in rows:
+            properties.setdefault(row[1], {})[row[2]] = row[3]
+
+        self.c.execute("SELECT * FROM relationships WHERE from_id = ?", (element[0],))
+        relationships = self.c.fetchall()
+
+        relating_type_id = None
+
+        for relationship in relationships:
+            if relationship[1] == "IfcRelDefinesByType":
+                relating_type_id = relationship[2]
+
+        type_properties = {}
+        if relating_type_id is not None:
+            self.c.execute("SELECT * FROM properties WHERE element_id = ?", (relating_type_id,))
+            rows = self.c.fetchall()
+            for row in rows:
+                type_properties.setdefault(row[1], {})[row[2]] = row[3]
+
+        LinksData.linked_data = {
+            "attributes": attributes,
+            "properties": [(k, properties[k]) for k in sorted(properties.keys())],
+            "type_properties": [(k, type_properties[k]) for k in sorted(type_properties.keys())],
+        }
+
+        for area in bpy.context.screen.areas:
+            if area.type == "PROPERTIES":
+                for region in area.regions:
+                    if region.type == "WINDOW":
+                        region.tag_redraw()
+            elif area.type == "VIEW_3D":
+                area.tag_redraw()
+
+        self.report({"INFO"}, f"Loaded data for {guid}")
+        ProjectDecorator.install(bpy.context)
+        return {"FINISHED"}
+
+    def ray_cast(self, context, origin, direction):
+        depsgraph = context.evaluated_depsgraph_get()
+        result = context.scene.ray_cast(depsgraph, origin, direction)
+        return result
+
+    def invoke(self, context, event):
+        self.mouse_x = event.mouse_region_x
+        self.mouse_y = event.mouse_region_y
+        return self.execute(context)
+
+
+class AppendInspectedLinkedElement(AppendLibraryElement):
+    bl_idname = "bim.append_inspected_linked_element"
+    bl_label = "Append Inspected Linked Element"
+    bl_description = "Append inspected linked element"
+    bl_options = {"REGISTER"}
+
+    def _execute(self, context):
+        from blenderbim.bim.module.project.data import LinksData
+
+        if not LinksData.linked_data:
+            self.report({"INFO"}, "No linked element found.")
+            return {"CANCELLED"}
+
+        guid = LinksData.linked_data["attributes"].get("GlobalId")
+        if guid is None:
+            self.report({"INFO"}, "Cannot find Global Id for element.")
+            return {"CANCELLED"}
+
+        queried_obj = context.scene.BIMProjectProperties.queried_obj
+        ifc_file = ifcopenshell.open(queried_obj["ifc_filepath"])
+        element_to_append = ifc_file.by_guid(guid)
+        element = ifcopenshell.api.run(
+            "project.append_asset",
+            tool.Ifc.get(),
+            library=ifc_file,
+            element=element_to_append,
+        )
+        self.import_product_from_ifc(element, context)
+        element_type = ifcopenshell.util.element.get_type(element)
+        obj = tool.Ifc.get_object(element_type)
+        if obj is None:
+            self.import_type_from_ifc(element_type, context)
+
+        return {"FINISHED"}
+
+
+class EnableCulling(bpy.types.Operator):
+    bl_idname = "bim.enable_culling"
+    bl_label = "Enable Culling"
+    bl_options = {"REGISTER"}
+
+    def __init__(self):
+        self.last_view_corners = None
+        self.total_mousemoves = 0
+        self.cullable_objects = []
+
+    def modal(self, context, event):
+        if not LinksData.enable_culling:
+            for obj in bpy.context.visible_objects:
+                if obj.type == "MESH" and obj.name.startswith("Ifc"):
+                    obj.display_type = "SOLID"
+            self.cullable_objects = []
+            return {"CANCELLED"}
+
+        # Even if the view is changing, there are certain scenarios where we
+        # don't want to apply culling. For example, if we scroll to zoom but
+        # are simultaneously moving our mouse, or if we `Zoom to Selected`. A
+        # dumb but seemingly effective way is to count MOUSEMOVE events. If at
+        # least 3 consecutive events occur, you're probably not doing some
+        # other navigational thing.
+        if event.type == "MOUSEMOVE":
+            self.total_mousemoves += 1
+        else:
+            self.total_mousemoves = 0
+
+        if self.total_mousemoves > 2 and self.is_view_changed(context):
+            self.total_mousemoves = 0
+            camera_position = context.region_data.view_matrix.inverted().translation
+            for obj in self.cullable_objects:
+                if obj.type == "MESH" and obj.name.startswith("Ifc"):
+                    if self.is_object_in_view(obj, context, camera_position):
+                        obj.display_type = "SOLID"
+                    elif obj.display_type != "BOUNDS":
+                        obj.display_type = "BOUNDS"
+
+        return {"PASS_THROUGH"}
+
+    def is_view_changed(self, context):
+        view_matrix = context.region_data.view_matrix
+        projection_matrix = context.region_data.window_matrix
+        vp_matrix = projection_matrix @ view_matrix
+
+        # Get NDC coordinates of the viewport corners
+        viewport_corners = [Vector((-1, -1, 0)), Vector((1, -1, 0)), Vector((1, 1, 0)), Vector((-1, 1, 0))]
+        ndc_corners = [vp_matrix @ Vector((corner.x, corner.y, -1, 1)) for corner in viewport_corners]
+        ndc_corners = [(corner / corner.w).xy for corner in ndc_corners]
+
+        if self.last_view_corners != ndc_corners:
+            self.last_view_corners = ndc_corners
+            return True
+        return False
+
+    def is_object_in_view(self, obj, context, camera_position):
+        # Get the view matrix and the projection matrix from the active viewport
+        view_matrix = context.region_data.view_matrix
+        projection_matrix = context.region_data.window_matrix
+        # Calculate the combined view projection matrix
+        vp_matrix = projection_matrix @ view_matrix
+        obj_matrix_world = obj.matrix_world
+
+        # Transform each corner of the bounding box using the view projection matrix
+        # and check if it's inside the normalized device coordinates (NDC) space
+        for corner in [obj_matrix_world @ Vector(corner) for corner in obj.bound_box]:
+            ndc = vp_matrix @ corner.to_4d()
+            ndc /= ndc.w
+            if -1 <= ndc.x <= 1 and -1 <= ndc.y <= 1 and 0 <= ndc.z <= 1:
+                # At least one corner is inside the view, so the object is visible
+                break
+        else:
+            return False
+
+        # Check if the object is too far away from the camera
+        object_center = obj.matrix_world.translation
+        distance_threshold = 900  # 30m squared
+        if (camera_position - object_center).length_squared > distance_threshold:
+            # The object is too far away, so consider it not visible
+            return False
+        return True
+
+    def invoke(self, context, event):
+        LinksData.enable_culling = True
+        self.cullable_objects = []
+        for obj in bpy.context.visible_objects:
+            if obj.type == "MESH" and obj.name.startswith("Ifc") and max(obj.dimensions) < 0.6:
+                self.cullable_objects.append(obj)
+                camera_position = context.region_data.view_matrix.inverted().translation
+                if not self.is_object_in_view(obj, context, camera_position):
+                    obj.display_type = "BOUNDS"
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+
+class DisableCulling(bpy.types.Operator):
+    bl_idname = "bim.disable_culling"
+    bl_label = "Disable Culling"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        LinksData.enable_culling = False
+        return {"FINISHED"}
+
+
+class RefreshClippingPlanes(bpy.types.Operator):
+    bl_idname = "bim.refresh_clipping_planes"
+    bl_label = "Refresh Clipping Planes"
+    bl_options = {"REGISTER"}
+
+    def __init__(self):
+        self.total_planes = 0
+
+    def invoke(self, context, event):
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        should_refresh = False
+
+        self.clean_deleted_planes(context)
+
+        for clipping_plane in context.scene.BIMProjectProperties.clipping_planes:
+            if clipping_plane.obj and self.is_moved(clipping_plane.obj):
+                should_refresh = True
+                break
+
+        total_planes = len(context.scene.BIMProjectProperties.clipping_planes)
+        if should_refresh or total_planes != self.total_planes:
+            self.refresh_clipping_planes(context)
+            for clipping_plane in context.scene.BIMProjectProperties.clipping_planes:
+                if clipping_plane.obj:
+                    tool.Geometry.record_object_position(clipping_plane.obj)
+            self.total_planes = total_planes
+        return {"PASS_THROUGH"}
+
+    def clean_deleted_planes(self, context):
+        while True:
+            for i, clipping_plane in enumerate(context.scene.BIMProjectProperties.clipping_planes):
+                if clipping_plane.obj:
+                    try:
+                        clipping_plane.obj.name
+                    except:
+                        context.scene.BIMProjectProperties.clipping_planes.remove(i)
+                        break
+                else:
+                    context.scene.BIMProjectProperties.clipping_planes.remove(i)
+                    break
+            else:
+                break
+
+    def is_moved(self, obj):
+        if not obj.BIMObjectProperties.location_checksum:
+            return True  # Let's be conservative
+        loc_check = np.frombuffer(eval(obj.BIMObjectProperties.location_checksum))
+        rot_check = np.frombuffer(eval(obj.BIMObjectProperties.rotation_checksum))
+        loc_real = np.array(obj.matrix_world.translation).flatten()
+        rot_real = np.array(obj.matrix_world.to_3x3()).flatten()
+        if np.allclose(loc_check, loc_real, atol=1e-4) and np.allclose(rot_check, rot_real, atol=1e-2):
+            return False
+        return True
+
+    def refresh_clipping_planes(self, context):
+        import bmesh
+        from itertools import cycle
+
+        area = next(a for a in bpy.context.screen.areas if a.type == "VIEW_3D")
+        region = next(r for r in area.regions if r.type == "WINDOW")
+        data = region.data
+
+        if not len(context.scene.BIMProjectProperties.clipping_planes):
+            data.use_clip_planes = False
+        else:
+            with bpy.context.temp_override(area=area, region=region):
+                bpy.ops.view3d.clip_border()
+
+                clip_planes = []
+                for clipping_plane in bpy.context.scene.BIMProjectProperties.clipping_planes:
+                    obj = clipping_plane.obj
+                    if not obj:
+                        continue
+                    print("doing", obj)
+
+                    bm = bmesh.new()
+                    bm.from_mesh(obj.data)
+
+                    world_matrix = obj.matrix_world
+
+                    bm.faces.ensure_lookup_table()
+                    face = bm.faces[0]
+                    center = world_matrix @ face.calc_center_median()
+                    print("center", center)
+                    normal = world_matrix.to_3x3() @ face.normal * -1
+                    center += normal * -0.01
+                    print("normal", normal)
+                    print("new center", center)
+
+                    normal.normalize()
+                    distance = -center.dot(normal)
+                    clip_plane = (normal.x, normal.y, normal.z, distance)
+                    clip_planes.append(clip_plane)
+                    bm.free()
+
+                clip_planes = cycle(clip_planes)
+                data.clip_planes = [tuple(next(clip_planes)) for i in range(0, 6)]
+        data.update()
+        region.tag_redraw()
+        [a.tag_redraw() for a in bpy.context.screen.areas]
+        return {"FINISHED"}
+
+
+class CreateClippingPlane(bpy.types.Operator):
+    bl_idname = "bim.create_clipping_plane"
+    bl_label = "Create Clipping Plane"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        from bpy_extras.view3d_utils import region_2d_to_vector_3d, region_2d_to_origin_3d
+
+        # Clean up deleted planes
+
+        if len(context.scene.BIMProjectProperties.clipping_planes) > 5:
+            self.report({"INFO"}, "Maximum of six clipping planes allowed.")
+            return {"FINISHED"}
+
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+        region = context.region
+        rv3d = context.region_data
+        if rv3d:  # Called from a 3D viewport
+            coord = (self.mouse_x, self.mouse_y)
+            origin = region_2d_to_origin_3d(region, rv3d, coord)
+            direction = region_2d_to_vector_3d(region, rv3d, coord)
+            hit, location, normal, face_index, obj, matrix = self.ray_cast(context, origin, direction)
+            if not hit:
+                self.report({"INFO"}, "No object found.")
+                return {"FINISHED"}
+        else:  # Not Called from a 3D viewport
+            location = (0, 0, 1)
+            normal = (0, 0, 1)
+
+        vertices = [(-0.5, -0.5, 0), (0.5, -0.5, 0), (0.5, 0.5, 0), (-0.5, 0.5, 0)]
+
+        faces = [(0, 1, 2, 3)]
+
+        mesh = bpy.data.meshes.new(name="ClippingPlane")
+        mesh.from_pydata(vertices, [], faces)
+        mesh.update()
+
+        plane_obj = bpy.data.objects.new("ClippingPlane", mesh)
+        context.collection.objects.link(plane_obj)
+        z_axis = Vector((0, 0, 1))
+        rotation_matrix = z_axis.rotation_difference(normal).to_matrix().to_4x4()
+        plane_obj.matrix_world = rotation_matrix
+        plane_obj.matrix_world.translation = location
+
+        context.scene.cursor.location = location
+
+        new = context.scene.BIMProjectProperties.clipping_planes.add()
+        new.obj = plane_obj
+
+        tool.Blender.set_active_object(plane_obj)
+
+        ClippingPlaneDecorator.install(context)
+        bpy.ops.bim.refresh_clipping_planes("INVOKE_DEFAULT")
+        return {"FINISHED"}
+
+    def ray_cast(self, context, origin, direction):
+        depsgraph = context.evaluated_depsgraph_get()
+        result = context.scene.ray_cast(depsgraph, origin, direction)
+        return result
+
+    def invoke(self, context, event):
+        self.mouse_x = event.mouse_region_x
+        self.mouse_y = event.mouse_region_y
+        return self.execute(context)
+
+
+class FlipClippingPlane(bpy.types.Operator):
+    bl_idname = "bim.flip_clipping_plane"
+    bl_label = "Flip Clipping Plane"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj in context.scene.BIMProjectProperties.clipping_planes_objs:
+            obj.rotation_euler[0] += radians(180)
+            context.view_layer.update()
+        return {"FINISHED"}
+
+
+CLIPPING_PLANES_FILE_NAME = "ClippingPlanes.json"  # TODO un-hardcode :=
+
+
+class BIM_OT_save_clipping_planes(bpy.types.Operator):
+    bl_idname = "bim.save_clipping_planes"
+    bl_label = "Save Clipping Planes"
+    bl_description = "Save Clipping Planes to Disk"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if IfcStore.path:
+            return context.scene.BIMProjectProperties.clipping_planes
+        cls.poll_message_set("Please Save The IFC File")
+
+    def execute(self, context):
+        clipping_planes_to_serialize = defaultdict(dict)
+        clipping_planes = context.scene.BIMProjectProperties.clipping_planes
+        for clipping_plane in clipping_planes:
+            obj = clipping_plane.obj
+            name = obj.name
+            clipping_planes_to_serialize[name]["location"] = obj.location[0:3]
+            clipping_planes_to_serialize[name]["rotation"] = obj.rotation_euler[0:3]
+        with open(Path(IfcStore.path).with_name(CLIPPING_PLANES_FILE_NAME), "w") as file:
+            json.dump(clipping_planes_to_serialize, file, indent=4)
+        return {"FINISHED"}
+
+
+class BIM_OT_load_clipping_planes(bpy.types.Operator):
+    bl_idname = "bim.load_clipping_planes"
+    bl_label = "Load Clipping Planes"
+    bl_description = "Load Clipping Planes from Disk"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if filepath := IfcStore.path:
+            if Path(filepath).with_name(CLIPPING_PLANES_FILE_NAME).exists():
+                return True
+            else:
+                cls.poll_message_set(f"No Clipping Planes File in Folder {filepath}")
+        else:
+            cls.poll_message_set("Please Save The IFC File")
+
+    def execute(self, context):
+        bpy.data.batch_remove(context.scene.BIMProjectProperties.clipping_planes_objs)
+        context.scene.BIMProjectProperties.clipping_planes.clear()
+        with open(Path(IfcStore.path).with_name(CLIPPING_PLANES_FILE_NAME), "r") as file:
+            clipping_planes_dict = json.load(file)
+        for name, values in clipping_planes_dict.items():
+            bpy.ops.bim.create_clipping_plane()
+            obj = context.scene.BIMProjectProperties.clipping_planes_objs[-1]
+            obj.name = name
+            obj.location = values["location"]
+            obj.rotation_euler = values["rotation"]
         return {"FINISHED"}

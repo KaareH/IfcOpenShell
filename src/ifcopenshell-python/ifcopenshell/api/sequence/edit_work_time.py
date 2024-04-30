@@ -17,11 +17,16 @@
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
 import ifcopenshell.util.date
-from ifcopenshell.util.data import WorkTimeDatesInterface
+from typing import Any, Optional
 
 
 class Usecase:
-    def __init__(self, file, work_time=None, attributes=None):
+    def __init__(
+        self,
+        file: ifcopenshell.file,
+        work_time: ifcopenshell.entity_instance,
+        attributes: Optional[dict[str, Any]] = None,
+    ):
         """Edits the attributes of an IfcWorkTime
 
         For more information about the attributes and data types of an
@@ -54,11 +59,15 @@ class Usecase:
         self.file = file
         self.settings = {"work_time": work_time, "attributes": attributes or {}}
 
-    def execute(self):
-        work_time_dates = WorkTimeDatesInterface(self.settings["work_time"])
+    def execute(self) -> None:
         for name, value in self.settings["attributes"].items():
-            if name in ("Start", "Finish", "StartDate", "FinishDate"):
+            if name in ("Start", "StartDate"):
                 value = ifcopenshell.util.date.datetime2ifc(value, "IfcDate")
-                setattr(work_time_dates, name, value)
+                # 4 IfcWorktime Start
+                self.settings["work_time"][4] = value
+            elif name in ("Finish", "FinishDate"):
+                value = ifcopenshell.util.date.datetime2ifc(value, "IfcDate")
+                # 5 IfcWorktime Finish
+                self.settings["work_time"][5] = value
             else:
                 setattr(self.settings["work_time"], name, value)

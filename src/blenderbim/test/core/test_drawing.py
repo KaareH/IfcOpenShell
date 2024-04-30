@@ -95,15 +95,21 @@ class TestAddSheet:
             information="sheet",
             attributes={"Identification": "u_identification", "Name": "UNTITLED", "Scope": "SHEET"},
         ).should_be_called()
+        drawing.generate_reference_attributes(
+            "reference", Location="layout_path", Description="LAYOUT"
+        ).should_be_called().will_return("attributes")
         ifc.run(
             "document.edit_reference",
             reference="reference",
-            attributes={"Location": "layout_path", "Description": "LAYOUT"},
+            attributes="attributes",
         ).should_be_called()
+        drawing.generate_reference_attributes(
+            "reference", Location="titleblock_path", Description="TITLEBLOCK"
+        ).should_be_called().will_return("attributes2")
         ifc.run(
             "document.edit_reference",
             reference="reference",
-            attributes={"Location": "titleblock_path", "Description": "TITLEBLOCK"},
+            attributes="attributes2",
         ).should_be_called()
         drawing.create_svg_sheet("sheet", "titleblock").should_be_called()
         drawing.import_sheets().should_be_called()
@@ -122,15 +128,21 @@ class TestAddSheet:
             information="sheet",
             attributes={"DocumentId": "u_identification", "Name": "UNTITLED", "Scope": "SHEET"},
         ).should_be_called()
+        drawing.generate_reference_attributes(
+            "reference", Location="layout_path", Description="LAYOUT"
+        ).should_be_called().will_return("attributes")
         ifc.run(
             "document.edit_reference",
             reference="reference",
-            attributes={"Location": "layout_path", "Description": "LAYOUT"},
+            attributes="attributes",
         ).should_be_called()
+        drawing.generate_reference_attributes(
+            "reference", Location="titleblock_path", Description="TITLEBLOCK"
+        ).should_be_called().will_return("attributes2")
         ifc.run(
             "document.edit_reference",
             reference="reference",
-            attributes={"Location": "titleblock_path", "Description": "TITLEBLOCK"},
+            attributes="attributes2",
         ).should_be_called()
         drawing.create_svg_sheet("sheet", "titleblock").should_be_called()
         drawing.import_sheets().should_be_called()
@@ -365,7 +377,7 @@ class TestAddDrawing:
             attributes={"Identification": "X", "Name": "name", "Scope": "DRAWING"},
         ).should_be_called()
         ifc.run("document.edit_reference", reference="reference", attributes={"Location": "uri"}).should_be_called()
-        ifc.run("document.assign_document", product="element", document="reference").should_be_called()
+        ifc.run("document.assign_document", products=["element"], document="reference").should_be_called()
         drawing.import_drawings().should_be_called()
         subject.add_drawing(ifc, collector, drawing, target_view="target_view", location_hint="location_hint")
 
@@ -378,7 +390,7 @@ class TestDuplicateDrawing:
         drawing.copy_representation("drawing", "new_drawing").should_be_called()
         drawing.set_name("new_drawing", "unique_name").should_be_called()
         drawing.get_drawing_group("new_drawing").should_be_called().will_return("group")
-        ifc.run("group.unassign_group", group="group", product="new_drawing").should_be_called()
+        ifc.run("group.unassign_group", group="group", products=["new_drawing"]).should_be_called()
         ifc.run("group.add_group").should_be_called().will_return("new_group")
         ifc.run(
             "group.edit_group", group="new_group", attributes={"Name": "unique_name", "ObjectType": "DRAWING"}
@@ -387,11 +399,11 @@ class TestDuplicateDrawing:
         drawing.get_group_elements("group").should_be_called().will_return(["drawing", "annotation"])
         ifc.run("root.copy_class", product="annotation").should_be_called().will_return("new_annotation")
         drawing.copy_representation("annotation", "new_annotation").should_be_called()
-        ifc.run("group.unassign_group", group="group", product="new_annotation").should_be_called()
+        ifc.run("group.unassign_group", group="group", products=["new_annotation"]).should_be_called()
         ifc.run("group.assign_group", group="new_group", products=["new_annotation"]).should_be_called()
 
         drawing.get_drawing_document("new_drawing").should_be_called().will_return("old_reference")
-        ifc.run("document.unassign_document", product="new_drawing", document="old_reference").should_be_called()
+        ifc.run("document.unassign_document", products=["new_drawing"], document="old_reference").should_be_called()
 
         ifc.run("document.add_information").should_be_called().will_return("information")
         ifc.run("document.add_reference", information="information").should_be_called().will_return("reference")
@@ -405,7 +417,7 @@ class TestDuplicateDrawing:
         ifc.run(
             "document.edit_reference", reference="reference", attributes={"Location": "drawing_path"}
         ).should_be_called()
-        ifc.run("document.assign_document", product="new_drawing", document="reference").should_be_called()
+        ifc.run("document.assign_document", products=["new_drawing"], document="reference").should_be_called()
 
         drawing.import_drawings().should_be_called()
         subject.duplicate_drawing(ifc, drawing, drawing="drawing", should_duplicate_annotations=True)
@@ -490,7 +502,9 @@ class TestUpdateDrawingName:
         )
         ifc.resolve_uri("relative_layout_uri").should_be_called().will_return("absolute_layout_uri")
         drawing.does_file_exist("absolute_layout_uri").should_be_called().will_return(True)
-        drawing.update_embedded_svg_location("absolute_layout_uri", "reference_with_old_location", "new_uri").should_be_called()
+        drawing.update_embedded_svg_location(
+            "absolute_layout_uri", "reference_with_old_location", "new_uri"
+        ).should_be_called()
 
         drawing.is_editing_sheets().should_be_called().will_return(True)
         drawing.import_sheets().should_be_called()

@@ -17,13 +17,17 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
+import sys
 import bpy
 import time
+import random
 import logging
 import platform
 import subprocess
 import addon_utils
 import ifcopenshell
+import ifcopenshell.api
+import ifcopenshell.util.element
 import ifcopenshell.util.placement
 import ifcopenshell.util.representation
 import blenderbim.tool as tool
@@ -623,3 +627,140 @@ class PurgeUnusedElementsByClass(bpy.types.Operator, tool.Ifc.Operator):
                 print("Finished 20 batches. Manually stopping in case of infinite loop.")
         self.report({"INFO"}, f"Auto purged {total_purged} orphaned elements")
         tool.Ifc.get().write(self.filepath)
+
+
+class PipInstall(bpy.types.Operator):
+    bl_idname = "bim.pip_install"
+    bl_label = "Pip Install"
+    bl_description = "Installs a package from PyPI"
+    name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        import blenderbim.bim
+
+        target = [p for p in sys.path if p.endswith("packages") and "addons" in p][0]
+        py_exec = str(sys.executable)
+
+        print("Detected executable:", py_exec)
+        print("Installing to:", target)
+
+        subprocess.call([py_exec, "-m", "ensurepip", "--user"])
+        subprocess.call([py_exec, "-m", "pip", "install", "--upgrade", "pip"])
+        # Trusted host to make things simpler due to some enterprise network restrictions
+        subprocess.call(
+            [
+                py_exec,
+                "-m",
+                "pip",
+                "install",
+                f"--target={target}",
+                "--upgrade",
+                self.name,
+                "--trusted-host",
+                "pypi.org",
+                "--trusted-host",
+                "files.pythonhosted.org",
+            ]
+        )
+        return {"FINISHED"}
+
+
+class DebugActiveDrawing(bpy.types.Operator):
+    bl_idname = "bim.debug_active_drawing"
+    bl_label = "Search Active Drawing For Failing Elements"
+    bl_description = (
+        "Will iterate over all visible drawing's objects, trying to narrow down the list of possible failing objects"
+    )
+
+    def execute(self, context: bpy.types.Context):
+        props = context.scene.DocProperties
+        drawing_item = props.drawings[props.active_drawing_index]
+        drawing = tool.Ifc.get().by_id(drawing_item.ifc_definition_id)
+
+        GREEN = "\033[92m"
+        CYAN = "\033[96m"
+        END = "\033[0m"
+        ATTEMPS = 10
+
+        # run create drawing with sync for once
+        # to make sure everything is actually in sync
+        try:
+            bpy.ops.bim.create_drawing(sync=True)
+        except:
+            pass
+        else:
+            self.report({"INFO"}, "No errors creating drawing, nothing to investigate.")
+            return {"FINISHED"}
+
+        all_elements = [e for obj in context.visible_objects if (e := tool.Ifc.get_entity(obj))]
+        all_elements = set(all_elements)
+
+        original_exclude = ifcopenshell.util.element.get_pset(drawing, "EPset_Drawing", "Exclude")
+        pset = tool.Pset.get_element_pset(drawing, "EPset_Drawing")
+
+        def drawing_fails_to_load(chunk_to_include: set) -> bool:
+            current_elements = all_elements - chunk_to_include
+            excluded_guids = ", ".join([e.GlobalId for e in current_elements if hasattr(e, "GlobalId")])
+            tool.Ifc.run("pset.edit_pset", pset=pset, properties={"Exclude": f"{original_exclude}, {excluded_guids}"})
+
+            try:
+                bpy.ops.bim.create_drawing(sync=False)
+                result = False
+            except Exception as e:
+                # print(e)
+                result = True
+
+            tool.Ifc.run("pset.edit_pset", pset=pset, properties={"Exclude": original_exclude})
+            return result
+
+        def test_elements(elements: list[ifcopenshell.entity_instance], attempts: int = ATTEMPS) -> None:
+            print(f"{CYAN}processing {len(elements)} elements{END}")
+            if not elements:
+                print(f"Empty list of elements, will stop...")
+                return
+
+            n_elements = len(elements)
+            middle = int(n_elements / 2)
+            chunk1, chunk2 = elements[:middle], elements[middle:]
+            test_chunk_1 = drawing_fails_to_load(set(chunk1))
+            test_chunk_2 = drawing_fails_to_load(set(chunk2))
+
+            if (
+                # both chunks do not fail anymore
+                (not test_chunk_1 and not test_chunk_2)
+                # or we have 1 element chunk that is still failing
+                or (test_chunk_1 and not chunk2)
+                or (test_chunk_2 and not chunk1)
+            ):
+                if attempts == 0 or n_elements in (1, 2):
+                    print(f"{GREEN}Couldn't narrow it down any further.{END}")
+                    print(f"It's some of the {n_elements} elements:")
+                    print(elements)
+
+                    print("Let's test excluding them...")
+                    for element in elements:
+                        test = drawing_fails_to_load(all_elements - {element})
+                        if test:
+                            print(f"{CYAN}Excluding element didn't fixed the drawing: {END}")
+                            print(element)
+                        else:
+                            print(f"{GREEN}Excluding element fixed the drawing: {END}")
+                            print(element)
+                else:
+                    print(f"{CYAN}Will try to reshuffle elements and try again, attempt {ATTEMPS-attempts+1}/{ATTEMPS}")
+                    attempts -= 1
+                    random.shuffle(elements)
+                    test_elements(elements, attempts)
+                return
+
+            # if chunk fails we need to investigate it further
+            if test_chunk_1:
+                test_elements(chunk1)
+
+            if test_chunk_2:
+                test_elements(chunk2)
+
+        test_elements(list(all_elements))
+
+        self.report({"INFO"}, "See system console for the results")
+        return {"FINISHED"}

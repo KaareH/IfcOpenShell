@@ -18,15 +18,21 @@
 
 import ifcopenshell
 import ifcopenshell.util.element
+import ifcopenshell.util.unit
+from typing import Union
+from logging import Logger
 
 
 class Patcher:
-    def __init__(self, src, file, logger, filepath=None):
+    def __init__(self, src: str, file: ifcopenshell.file, logger: Logger, filepath: str):
         """Merge two IFC models into one
 
         Note that other than combining the two IfcProject elements into one, no
         further processing will be done. This means that you may end up with
         duplicate spatial hierarchies (i.e. 2 sites, 2 buildings, etc).
+
+        Will automatically convert length units in the second model to the main
+        model's unit before merging.
 
         :param filepath: The filepath of the second IFC model to merge into the
             first. The first model is already specified as the input to
@@ -46,19 +52,34 @@ class Patcher:
 
     def patch(self):
         source = ifcopenshell.open(self.filepath)
-        self.existing_contexts = self.file.by_type("IfcGeometricRepresentationContext")
-        self.added_contexts = set()
+        # make sure models units will match
+        if (main_unit := self.get_unit_name(self.file)) != self.get_unit_name(source):
+            source = ifcopenshell.util.unit.convert_file_length_units(source, main_unit)
+
+        self.existing_contexts: list[ifcopenshell.entity_instance] = self.file.by_type(
+            "IfcGeometricRepresentationContext"
+        )
+        self.added_contexts: set[ifcopenshell.entity_instance] = set()
+
         original_project = self.file.by_type("IfcProject")[0]
         merged_project = self.file.add(source.by_type("IfcProject")[0])
+
         for element in source.by_type("IfcGeometricRepresentationContext"):
             new = self.file.add(element)
             self.added_contexts.add(new)
+
         for element in source:
             self.file.add(element)
+
         for inverse in self.file.get_inverse(merged_project):
             ifcopenshell.util.element.replace_attribute(inverse, merged_project, original_project)
         self.file.remove(merged_project)
+
         self.reuse_existing_contexts()
+
+    def get_unit_name(self, ifc_file: ifcopenshell.file) -> str:
+        length_unit = ifcopenshell.util.unit.get_project_unit(ifc_file, "LENGTHUNIT")
+        return ifcopenshell.util.unit.get_full_unit_name(length_unit)
 
     def reuse_existing_contexts(self):
         to_delete = set()
@@ -73,7 +94,9 @@ class Patcher:
         for added_context in to_delete:
             ifcopenshell.util.element.remove_deep2(self.file, added_context)
 
-    def get_equivalent_existing_context(self, added_context):
+    def get_equivalent_existing_context(
+        self, added_context: ifcopenshell.entity_instance
+    ) -> Union[ifcopenshell.entity_instance, None]:
         for context in self.existing_contexts:
             if context.is_a() != added_context.is_a():
                 continue
