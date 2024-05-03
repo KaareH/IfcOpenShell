@@ -21,10 +21,11 @@ import ifcopenshell
 import ifcopenshell.api
 import ifcopenshell.api.owner.settings
 import ifcopenshell.util.element
+from typing import Union
 
 
 class Usecase:
-    def __init__(self, file, element=None):
+    def __init__(self, file: ifcopenshell.file, element: ifcopenshell.entity_instance):
         """Updates the owner that is assigned to an object
 
         This ensures that the owner is tracked to have modified the object last,
@@ -60,8 +61,9 @@ class Usecase:
         self.file = file
         self.settings = {"element": element}
 
-    def execute(self):
-        if not hasattr(self.settings["element"], "OwnerHistory"):
+    def execute(self) -> Union[ifcopenshell.entity_instance, None]:
+        element = self.settings["element"]
+        if not element.is_a("IfcRoot"):
             return
         user = ifcopenshell.api.owner.settings.get_user(self.file)
         if not user:
@@ -69,14 +71,24 @@ class Usecase:
         application = ifcopenshell.api.owner.settings.get_application(self.file)
         if not application:
             return
-        if not self.settings["element"].OwnerHistory:
-            self.settings["element"].OwnerHistory = ifcopenshell.api.run("owner.create_owner_history", self.file)
-            return self.settings["element"].OwnerHistory
-        if self.file.get_total_inverses(self.settings["element"].OwnerHistory) > 1:
-            new = ifcopenshell.util.element.copy(self.file, self.settings["element"].OwnerHistory)
-            self.settings["element"].OwnerHistory = new
-        self.settings["element"].OwnerHistory.ChangeAction = "MODIFIED"
-        self.settings["element"].OwnerHistory.LastModifiedDate = int(time.time())
-        self.settings["element"].OwnerHistory.LastModifyingUser = user
-        self.settings["element"].OwnerHistory.LastModifyingApplication = application
-        return self.settings["element"].OwnerHistory
+
+        # 1 IfcRoot IfcOwnerHistory
+        owner_history = element[1]
+        if not owner_history:
+            owner_history = ifcopenshell.api.run("owner.create_owner_history", self.file)
+            element[1] = owner_history
+            return owner_history
+
+        if self.file.get_total_inverses(owner_history) > 1:
+            owner_history = ifcopenshell.util.element.copy(self.file, owner_history)
+            element[1] = owner_history
+
+        # 3 IfcOwnerHistory ChangeAction
+        owner_history[3] = "MODIFIED"
+        # 4 IfcOwnerHistory LastModifiedDate
+        owner_history[4] = int(time.time())
+        # 5 IfcOwnerHistory LastModifyingUser
+        owner_history[5] = user
+        # 6 IfcOwnerHistory LastModifyingApplication
+        owner_history[6] = application
+        return owner_history
