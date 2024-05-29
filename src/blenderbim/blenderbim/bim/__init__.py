@@ -17,11 +17,11 @@
 # along with BlenderBIM Add-on.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
-from pathlib import Path
 import bpy
 import bpy.utils.previews
 import blenderbim
 import importlib
+from pathlib import Path
 from . import handler, ui, prop, operator, helper
 from typing import Callable, Union
 
@@ -103,6 +103,7 @@ classes = [
     operator.BIM_OT_select_object,
     operator.BIM_OT_show_description,
     operator.ClippingPlaneCutWithCappings,
+    operator.CloseError,
     operator.EditBlenderCollection,
     operator.FileAssociate,
     operator.FileUnassociate,
@@ -153,9 +154,10 @@ classes = [
     ui.BIM_PT_tab_representations,
     ui.BIM_PT_tab_geometric_relationships,
     ui.BIM_PT_tab_parametric_geometry,
-    ui.BIM_PT_tab_profiles,
+    ui.BIM_PT_tab_object_materials,
     ui.BIM_PT_tab_materials,
     ui.BIM_PT_tab_styles,
+    ui.BIM_PT_tab_profiles,
     # Drawings and documents
     ui.BIM_PT_tab_sheets,
     ui.BIM_PT_tab_drawings,
@@ -168,6 +170,7 @@ classes = [
     ui.BIM_PT_tab_structural,
     # Construction scheduling
     ui.BIM_PT_tab_status,
+    ui.BIM_PT_tab_qto,
     ui.BIM_PT_tab_resources,
     ui.BIM_PT_tab_cost,
     ui.BIM_PT_tab_sequence,

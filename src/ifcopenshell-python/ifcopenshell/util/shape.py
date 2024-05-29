@@ -117,6 +117,28 @@ def get_z(geometry) -> float:
     return max(z_values) - min(z_values)
 
 
+def get_max_xyz(geometry) -> float:
+    """Gets the maximum X, Y, or Z length of the geometry
+
+    :param geometry: Geometry output calculated by IfcOpenShell
+    :type geometry: geometry
+    :return: The maximum possible value out of the X, Y, and Z dimension
+    :rtype: float
+    """
+    return max(get_x(geometry), get_y(geometry), get_z(geometry))
+
+
+def get_min_xyz(geometry) -> float:
+    """Gets the minimum X, Y, or Z length of the geometry
+
+    :param geometry: Geometry output calculated by IfcOpenShell
+    :type geometry: geometry
+    :return: The minimum possible value out of the X, Y, and Z dimension
+    :rtype: float
+    """
+    return min(get_x(geometry), get_y(geometry), get_z(geometry))
+
+
 def get_shape_matrix(shape) -> MatrixType:
     """Formats the transformation matrix of a shape as a 4x4 numpy array
 
@@ -161,7 +183,7 @@ def get_element_bbox_centroid(element: ifcopenshell.entity_instance, geometry) -
     is more efficient to use ``get_shape_bbox_centroid``.
 
     :param element: The element occurrence
-    :type: ifcopenshell.entity_instance.entity_instance
+    :type: ifcopenshell.entity_instance
     :param geometry: Geometry output calculated by IfcOpenShell
     :type geometry: geometry
     :return: A tuple representing the XYZ centroid
@@ -271,7 +293,7 @@ def get_element_vertices(element: ifcopenshell.entity_instance, geometry) -> npt
     Results are a nested numpy array e.g. [[v1x, v1y, v1z], [v2x, v2y, v2z], ...]
 
     :param element: The element occurrence
-    :type: ifcopenshell.entity_instance.entity_instance
+    :type: ifcopenshell.entity_instance
     :param geometry: Geometry output calculated by IfcOpenShell
     :type geometry: geometry
     :return: A numpy array listing all the vertices. Each vertex is a numpy array with XYZ coordinates.
@@ -347,7 +369,7 @@ def get_element_bottom_elevation(element: ifcopenshell.entity_instance, geometry
     ``get_shape_bottom_elevation``.
 
     :param element: The element occurrence
-    :type: ifcopenshell.entity_instance.entity_instance
+    :type: ifcopenshell.entity_instance
     :param geometry: Geometry output calculated by IfcOpenShell
     :type geometry: geometry
     :return: The Z value
@@ -363,7 +385,7 @@ def get_element_top_elevation(element: ifcopenshell.entity_instance, geometry) -
     ``get_shape_top_elevation``.
 
     :param element: The element occurrence
-    :type: ifcopenshell.entity_instance.entity_instance
+    :type: ifcopenshell.entity_instance
     :param geometry: Geometry output calculated by IfcOpenShell
     :type geometry: geometry
     :return: The Z value
@@ -484,6 +506,19 @@ def get_side_area(
     filtered_face_indices = np.where(dot_products > normal_tol)[0]
     filtered_faces = faces[filtered_face_indices]
     return get_area_vf(vertices, filtered_faces)
+
+
+def get_max_side_area(geometry) -> float:
+    """Returns the maximum X, Y, or Z side area
+
+    See :func:`get_side_area` for how side area is calculated.
+
+    :param geometry: Geometry output calculated by IfcOpenShell
+    :type geometry: geometry
+    :return: The maximum surface area from either the X, Y, or Z axis.
+    :rtype: float
+    """
+    return max(get_side_area(geometry, axis="X"), get_side_area(geometry, axis="Y"), get_side_area(geometry, axis="Z"))
 
 
 def get_footprint_area(
@@ -656,9 +691,9 @@ def get_profiles(element: ifcopenshell.entity_instance) -> list[ifcopenshell.ent
     solid extrusions. This is useful for later doing 2D take-off from profiles.
 
     :param element: The element occurrence
-    :type: ifcopenshell.entity_instance.entity_instance
+    :type: ifcopenshell.entity_instance
     :return: A list of profiles
-    :rtype: list[ifcopenshell.entity_instance.entity_instance]
+    :rtype: list[ifcopenshell.entity_instance]
     """
     material = ifcopenshell.util.element.get_material(element, should_skip_usage=True)
     if material and material.is_a("IfcMaterialProfileSet"):
@@ -670,9 +705,9 @@ def get_extrusions(element: ifcopenshell.entity_instance) -> list[ifcopenshell.e
     """Gets all extruded area solids used to define an element's model body geometry
 
     :param element: The element occurrence
-    :type: ifcopenshell.entity_instance.entity_instance
+    :type: ifcopenshell.entity_instance
     :return: A list of extrusion representation items
-    :rtype: list[ifcopenshell.entity_instance.entity_instance]
+    :rtype: list[ifcopenshell.entity_instance]
     """
     representation = ifcopenshell.util.representation.get_representation(element, "Model", "Body", "MODEL_VIEW")
     if not representation:

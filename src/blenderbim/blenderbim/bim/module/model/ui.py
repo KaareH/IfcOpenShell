@@ -56,8 +56,11 @@ class LaunchTypeManager(bpy.types.Operator):
             ifc_class = props.ifc_class or AuthoringData.data["ifc_element_type"]
         else:
             ifc_class = AuthoringData.data["ifc_element_type"]
-        props.type_class = ifc_class
-        bpy.ops.bim.load_type_thumbnails(ifc_class=ifc_class, offset=0, limit=9)
+
+        # will be None if project has no types
+        if ifc_class is not None:
+            props.type_class = ifc_class
+            bpy.ops.bim.load_type_thumbnails(ifc_class=ifc_class, offset=0, limit=9)
         return context.window_manager.invoke_popup(self, width=550)
 
     def draw(self, context):
@@ -134,6 +137,7 @@ class LaunchTypeManager(bpy.types.Operator):
             op = row.operator("bim.rename_type", icon="GREASEPENCIL", text="")
             op.element = relating_type["id"]
             op = row.operator("bim.select_type", icon="OBJECT_DATA", text="")
+            op.relating_type = relating_type["id"]
             op = row.operator("bim.duplicate_type", icon="DUPLICATE", text="")
             op.element = relating_type["id"]
             op = row.operator("bim.remove_type", icon="X", text="")
@@ -219,6 +223,8 @@ class BIM_PT_array(bpy.types.Panel):
                     row = col.row(align=True)
                     row.prop(props, "z")
                     row.operator("bim.input_cursor_z_array", icon="CURSOR", text="")
+                    row = col.row(align=True)
+                    row.prop(props, "relating_array_object", icon="COPYDOWN")
                 else:
                     row = box.row(align=True)
                     name = f"{array['count']} Items ({array.get('method', 'OFFSET').capitalize()})"

@@ -24,12 +24,13 @@ classes = (
     operator.CalculateEdgeLengths,
     operator.CalculateFaceAreas,
     operator.CalculateObjectVolumes,
-    operator.ExecuteQtoMethod,
-    operator.QuantifyObjects,
-    operator.AssignBaseQto,
-    operator.CalculateAllQuantities,
+    operator.CalculateSingleQuantity,
+    operator.PerformQuantityTakeOff,
     prop.BIMQtoProperties,
-    ui.BIM_PT_qto_utilities,
+    ui.BIM_PT_qto,
+    ui.BIM_PT_qto_manual,
+    ui.BIM_PT_qto_simple,
+    ui.BIM_PT_qto_cost,
 )
 
 

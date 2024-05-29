@@ -1,5 +1,5 @@
 # IfcOpenShell - IFC toolkit and geometry engine
-# Copyright (C) 2021 Thomas Krijnen <thomas@aecgeeks.com>
+# Copyright (C) 2022 Dion Moult <dion@thinkmoult.com>
 #
 # This file is part of IfcOpenShell.
 #
@@ -16,12 +16,19 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with IfcOpenShell.  If not, see <http://www.gnu.org/licenses/>.
 
+import test.bootstrap
+import ifcopenshell.api
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
-from . import ifcopenshell_wrapper
+class TestAddLayer(test.bootstrap.IFC4):
+    def test_add_layer_no_arguments(self):
+        layer = ifcopenshell.api.run("layer.add_layer", self.file)
+        assert layer.Name == "Unnamed"
 
-version = ifcopenshell_wrapper.version()
-get_log = ifcopenshell_wrapper.get_log
+    def test_assign_additional_items(self):
+        layer = ifcopenshell.api.run("layer.add_layer", self.file, name="Name")
+        assert layer.Name == "Name"
+
+
+class TestAddLayerIFC2X3(test.bootstrap.IFC2X3, TestAddLayer):
+    pass

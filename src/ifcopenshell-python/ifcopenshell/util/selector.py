@@ -21,6 +21,7 @@ import lark
 import numpy as np
 import ifcopenshell.api
 import ifcopenshell.util
+import ifcopenshell.util.attribute
 import ifcopenshell.util.fm
 import ifcopenshell.util.unit
 import ifcopenshell.util.element
@@ -30,7 +31,7 @@ import ifcopenshell.util.classification
 import ifcopenshell.util.schema
 import ifcopenshell.util.shape
 from decimal import Decimal
-from typing import Optional, Any, Union
+from typing import Optional, Any, Union, Iterable
 
 
 filter_elements_grammar = lark.Lark(
@@ -287,17 +288,18 @@ def filter_elements(
     Filter elements based on the provided `query`.
 
     :param ifc_file: The IFC file object
-    :type ifc_file: ifcopenshell.file.file
+    :type ifc_file: ifcopenshell.file
     :param query: Query to execute
     :type query: str
-    :param elements: Base set of IFC elements for the query.
-        If provided, new elements found for the current query will be added to `elements`.
-        Elements explicitly excluded in the `query` will also be excluded from `elements`
-    :type elements: set[ifcopenshell.entity_instance.entity_instance], optional
+    :param elements: Base set of IFC elements for the query. If not provided,
+        all elements in the IFC are queried. If provided, the query will be
+        applied to this set of elements, so the result will be a subset of
+        elements.
+    :type elements: set[ifcopenshell.entity_instance], optional
     :param edit_in_place: If `True`, mutate the provided `elements` in place. Defaults to `False`
     :type edit_in_place: bool
     :return: Set of filtered elements
-    :rtype: set[ifcopenshell.entity_instance.entity_instance]
+    :rtype: set[ifcopenshell.entity_instance]
 
     Example:
 
@@ -324,12 +326,16 @@ def filter_elements(
     return transformer.get_results()
 
 
+class SetElementValueException(Exception): ...
+
+
 def set_element_value(
     ifc_file: ifcopenshell.file,
-    element: ifcopenshell.entity_instance,
+    element: Union[ifcopenshell.entity_instance, Iterable[ifcopenshell.entity_instance], None],
     query: Union[str, list[str]],
-    value: Optional[str],
-) -> Union[ifcopenshell.entity_instance, None]:
+    value: Any,
+) -> None:
+    original_element = element
     if isinstance(query, (list, tuple)):
         keys = query
     else:
@@ -366,6 +372,7 @@ def set_element_value(
         elif key == "class":
             if element.is_a().lower() != value.lower():
                 return ifcopenshell.util.schema.reassign_class(ifc_file, element, value)
+            return
         elif key == "id":
             return
         elif key == "classification":
@@ -392,12 +399,21 @@ def set_element_value(
             ifcopenshell.api.run(
                 "geometry.edit_object_placement", ifc_file, product=element, matrix=matrix, is_si=False
             )
+            return
         elif isinstance(element, ifcopenshell.entity_instance):
             if key == "Name" and element.is_a("IfcMaterialLayerSet"):
                 key = "LayerSetName"  # This oddity in the IFC spec is annoying so we account for it.
 
-            if isinstance(key, str) and hasattr(element, key):
-                if getattr(element, key) != value:
+            if isinstance(key, str) and ((current_value := getattr(element, key, ...)) is not ...):
+                # check if key is not last
+                if len(keys) != i + 1:
+                    element = current_value
+                    continue
+
+                if current_value == value:
+                    return
+                else:
+                    # check if key is not last
                     try:
                         # Try our luck
                         return setattr(element, key, value)
@@ -418,9 +434,13 @@ def set_element_value(
                             if value in ("True", "true", "TRUE", "Yes", "1"):
                                 value = True
                             elif value in ("False", "false", "FALSE", "No", "0"):
-                                value = True
+                                value = False
                             else:
                                 value = bool(value)
+                        elif data_type == "entity":
+                            value = ifc_file.by_guid(value)
+                        if current_value == value:
+                            return
                         return setattr(element, key, value)
             else:
                 # Try to extract pset
@@ -463,24 +483,32 @@ def set_element_value(
                 except:
                     pass
             return
-        elif isinstance(element, (list, tuple)):  # If we use regex
+        elif isinstance(element, (list, tuple, set)):  # If we use regex
             if key.isnumeric():
                 try:
                     element = element[int(key)]
                 except IndexError:
                     return
             else:
-                results = []
                 for v in element:
-                    cls.set_element_value(ifc_file, v, keys[i + 1 :], value)
+                    set_element_value(ifc_file, v, keys[i:], value)
                 return
+
+    raise SetElementValueException(
+        f"Failed to set value for element '{original_element}' with query '{query}' (invalid or unsupported query)."
+    )
 
 
 class FacetTransformer(lark.Transformer):
     def __init__(self, ifc_file: ifcopenshell.file, elements: Optional[set[ifcopenshell.entity_instance]] = None):
         self.file = ifc_file
         self.results = []
-        self.elements = set() if elements is None else elements
+        if elements is None:
+            self.base_elements = None
+            self.elements = set()
+        else:
+            self.base_elements = elements.copy()
+            self.elements = set()
         self.container_parents = {}
         self.container_trees = {}
 
@@ -496,28 +524,44 @@ class FacetTransformer(lark.Transformer):
             self.elements = set()
 
     def instance(self, args):
-        if args[0].data == "globalid":
-            try:
-                self.elements.add(self.file.by_guid(args[0].children[0].value))
-            except:
-                pass
+        if self.base_elements is None:
+            if args[0].data == "globalid":
+                try:
+                    self.elements.add(self.file.by_guid(args[0].children[0].value))
+                except:
+                    pass
+            else:
+                try:
+                    self.elements.remove(self.file.by_guid(args[1].children[0].value))
+                except:
+                    pass
         else:
-            try:
-                self.elements.remove(self.file.by_guid(args[1].children[0].value))
-            except:
-                pass
+            if args[0].data == "globalid":
+                self.elements |= {
+                    e for e in self.base_elements if getattr(e, "GlobalId", None) == args[0].children[0].value
+                }
+            else:
+                self.elements -= {
+                    e for e in self.base_elements if getattr(e, "GlobalId", None) == args[1].children[0].value
+                }
 
     def entity(self, args):
-        if args[0].data == "ifc_class":
-            try:
-                self.elements |= set(self.file.by_type(args[0].children[0].value))
-            except:
-                pass
+        if self.base_elements is None:
+            if args[0].data == "ifc_class":
+                try:
+                    self.elements |= set(self.file.by_type(args[0].children[0].value))
+                except:
+                    pass
+            else:
+                try:
+                    self.elements -= set(self.file.by_type(args[1].children[0].value))
+                except:
+                    pass
         else:
-            try:
-                self.elements -= set(self.file.by_type(args[1].children[0].value))
-            except:
-                pass
+            if args[0].data == "ifc_class":
+                self.elements |= {e for e in self.base_elements if e.is_a(args[0].children[0].value)}
+            else:
+                self.elements -= {e for e in self.base_elements if e.is_a(args[1].children[0].value)}
 
     def attribute(self, args):
         name, comparison, value = args
@@ -970,6 +1014,8 @@ class Selector:
                 value = ifcopenshell.util.element.get_material(value, should_skip_usage=True)
             elif key in ("materials", "mats"):
                 value = ifcopenshell.util.element.get_materials(value)
+            elif key == "profiles":
+                value = ifcopenshell.util.shape.get_profiles(value)
             elif key == "styles":
                 value = ifcopenshell.util.element.get_styles(value)
             elif key in ("item", "i"):

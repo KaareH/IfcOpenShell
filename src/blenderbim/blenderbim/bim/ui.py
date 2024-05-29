@@ -19,6 +19,7 @@
 import os
 import bpy
 import addon_utils
+import platform
 from pathlib import Path
 from bpy.types import Panel
 from bpy.props import StringProperty, IntProperty, BoolProperty
@@ -29,8 +30,9 @@ from ifcopenshell.util.doc import (
     get_attribute_doc,
 )
 from . import ifc
-import blenderbim.tool as tool
+from blenderbim import get_debug_info
 import blenderbim.bim
+import blenderbim.tool as tool
 from blenderbim.bim.helper import IfcHeaderExtractor
 from blenderbim.bim.prop import Attribute
 
@@ -193,18 +195,19 @@ class BIM_ADDON_preferences(bpy.types.AddonPreferences):
     pdf_command: StringProperty(name="PDF Command", description='E.g. [["firefox", "path"]]')
     spreadsheet_command: StringProperty(name="Spreadsheet Command", description='E.g. [["libreoffice", "path"]]')
     openlca_port: IntProperty(name="OpenLCA IPC Port", default=8080)
-    should_hide_empty_props: BoolProperty(name="Should Hide Empty Properties", default=True)
-    should_setup_workspace: BoolProperty(name="Should Setup Workspace Layout for BIM", default=True)
+    should_hide_empty_props: BoolProperty(name="Hide Empty Properties", default=True)
+    should_setup_workspace: BoolProperty(name="Setup Workspace Layout for BIM", default=True)
+    activate_workspace: BoolProperty(name="Activate BIM Workspace on Startup", default=True)
     should_setup_toolbar: BoolProperty(
         name="Always Show Toolbar In 3D Viewport",
         default=True,
         description="If disabled, the toolbar will only load when an IFC model is active",
     )
     should_play_chaching_sound: BoolProperty(
-        name="Should Make A Cha-Ching Sound When Project Costs Updates", default=False
+        name="Play A Cha-Ching Sound When Project Costs Updates", default=False
     )
-    lock_grids_on_import: BoolProperty(name="Should Lock Grids By Default", default=True)
-    spatial_elements_unselectable: BoolProperty(name="Should Make Spatial Elements Unselectable By Default", default=True)
+    lock_grids_on_import: BoolProperty(name="Lock Grids By Default", default=True)
+    spatial_elements_unselectable: BoolProperty(name="Make Spatial Elements Unselectable By Default", default=True)
     decorations_colour: bpy.props.FloatVectorProperty(
         name="Decorations Colour", subtype="COLOR", default=(1, 1, 1, 1), min=0.0, max=1.0, size=4
     )
@@ -281,6 +284,8 @@ class BIM_ADDON_preferences(bpy.types.AddonPreferences):
         row = layout.row()
         row.prop(self, "should_setup_workspace")
         row = layout.row()
+        row.prop(self, "activate_workspace")
+        row = layout.row()
         row.prop(self, "should_setup_toolbar")
         row = layout.row()
         row.prop(self, "should_play_chaching_sound")
@@ -288,8 +293,6 @@ class BIM_ADDON_preferences(bpy.types.AddonPreferences):
         row.prop(self, "lock_grids_on_import")
         row = layout.row()
         row.prop(self, "spatial_elements_unselectable")
-
-
 
         row = layout.row()
         row.prop(context.scene.BIMProjectProperties, "should_disable_undo_on_save")
@@ -319,28 +322,30 @@ class BIM_ADDON_preferences(bpy.types.AddonPreferences):
         row.prop(context.scene.BIMProperties, "data_dir")
         row.operator("bim.select_data_dir", icon="FILE_FOLDER", text="")
 
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.BIMProperties, "pset_dir")
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "sheets_dir")
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "layouts_dir")
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "titleblocks_dir")
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "drawings_dir")
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "stylesheet_path")
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "markers_path")
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "symbols_path")
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "patterns_path")
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "shadingstyles_path")
-        row = self.layout.row(align=True)
+        row = self.layout.row()
         row.prop(context.scene.DocProperties, "shadingstyle_default")
+        row = self.layout.row()
+        row.prop(context.scene.DocProperties, "drawing_font")
 
 
 # Scene panel groups
@@ -402,6 +407,21 @@ class BIM_PT_tabs(Panel):
 
             row = self.layout.row(align=True)
             row.prop(aprops, "tab", text="")
+
+            if blenderbim.last_error:
+                box = self.layout.box()
+                box.alert=True
+                row = box.row(align=True)
+                row.label(text="BlenderBIM experienced an error :(", icon="ERROR")
+                row.operator("bim.close_error", text="", icon="CANCEL")
+                if platform.system() == "Windows":
+                    box.operator("wm.console_toggle", text="View the console for full logs.", icon="CONSOLE")
+                else:
+                    box.label(text="View the console for full logs.", icon="CONSOLE")
+                box.operator("bim.copy_debug_information", text="Copy Error Message To Clipboard")
+                op = box.operator("bim.open_uri", text="How Can I Fix This?")
+                op.uri = "https://docs.blenderbim.org/users/troubleshooting.html"
+
         except:
             pass  # Prior to load_post, we may not have any area properties setup
 
@@ -506,6 +526,20 @@ class BIM_PT_tab_geometry(Panel):
 
 class BIM_PT_tab_status(Panel):
     bl_label = "Status"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+
+    @classmethod
+    def poll(cls, context):
+        return tool.Blender.is_tab(context, "SCHEDULING") and tool.Ifc.get()
+
+    def draw(self, context):
+        pass
+
+
+class BIM_PT_tab_qto(Panel):
+    bl_label = "Quantity Take-off"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "scene"
@@ -715,6 +749,21 @@ class BIM_PT_tab_parametric_geometry(Panel):
     bl_context = "scene"
     bl_order = 1
     bl_options = {"DEFAULT_CLOSED"}
+
+    @classmethod
+    def poll(cls, context):
+        return tool.Blender.is_tab(context, "GEOMETRY") and tool.Ifc.get()
+
+    def draw(self, context):
+        pass
+
+
+class BIM_PT_tab_object_materials(Panel):
+    bl_label = "Object Materials"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_order = 1
 
     @classmethod
     def poll(cls, context):
