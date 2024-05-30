@@ -1,6 +1,7 @@
 # Dependency and build folders created by the build scripts
 /_deps/
 /_build-vs*-x*/
+/_build-vs*-Win*/
 /_deps-vs*-x*-installed/
 /_deps-vs*-Win*-installed/
 /_installed-vs*-x*/
