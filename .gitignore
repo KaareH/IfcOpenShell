@@ -2,6 +2,7 @@
 /_deps/
 /_build-vs*-x*/
 /_deps-vs*-x*-installed/
+/_deps-vs*-Win*-installed/
 /_installed-vs*-x*/
 /build/
 
