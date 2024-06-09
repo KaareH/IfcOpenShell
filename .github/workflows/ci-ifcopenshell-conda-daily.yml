@@ -2,9 +2,8 @@ name: ci-ifcopenshell-conda-daily
 
 on:
   workflow_dispatch:
-  - branches:
-    - '!v0.7.0'
-    - '!**'
+    branches-ignore:
+      - "v0.7.0"
   schedule:
   #         ┌───────────── minute (0 - 59)
   #         │  ┌───────────── hour (0 - 23)
