@@ -2,6 +2,8 @@ name: ci-ifcopenshell-conda-daily
 
 on:
   workflow_dispatch:
+    repositories:
+        - 'IfcOpenShell/IfcOpenShell'
   schedule:
   #         ┌───────────── minute (0 - 59)
   #         │  ┌───────────── hour (0 - 23)
