@@ -15,7 +15,7 @@ on:
 
 jobs:
   test:
-    if: github.repository == 'IfcOpenShell/IfcOpenShell'
+    # if: github.repository == 'IfcOpenShell/IfcOpenShell'
     name: ${{ matrix.platform.distver }}-${{ matrix.pyver.name }}-${{ matrix.variant }}
     runs-on: ${{ matrix.platform.distver }}
     defaults:
